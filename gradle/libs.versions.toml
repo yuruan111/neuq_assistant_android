@@ -1,0 +1,18 @@
+[versions]
+agp = "8.5.2"
+kotlin = "2.0.20"
+
+[libraries]
+androidx-core-ktx = "androidx.core:core-ktx:1.13.1"
+androidx-activity-compose = "androidx.activity:activity-compose:1.9.2"
+androidx-lifecycle-runtime-ktx = "androidx.lifecycle:lifecycle-runtime-ktx:2.8.6"
+androidx-lifecycle-viewmodel-compose = "androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6"
+androidx-datastore-preferences = "androidx.datastore:datastore-preferences:1.1.1"
+androidx-security-crypto = "androidx.security:security-crypto:1.1.0-alpha06"
+androidx-webkit = "androidx.webkit:webkit:1.12.0"
+junit = "junit:junit:4.13.2"
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

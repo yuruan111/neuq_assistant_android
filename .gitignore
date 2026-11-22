@@ -1,0 +1,27 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/build
+/app/release
+/app/debug
+
+# 签名材料（不要提交 keystore / p12）
+*.jks
+*.p12
+*.keystore
+keystore.properties
+
+# 本机笔记
+local_notes/
+
+# Kotlin 编译会话
+.kotlin/
+
+*.log

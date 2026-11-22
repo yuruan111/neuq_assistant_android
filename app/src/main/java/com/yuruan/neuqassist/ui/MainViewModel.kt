@@ -1,0 +1,766 @@
+package com.yuruan.neuqassist.ui
+
+import android.app.Application
+import android.content.Context
+import android.webkit.CookieManager
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.yuruan.neuqassist.data.AppConfig
+import com.yuruan.neuqassist.data.AppError
+import com.yuruan.neuqassist.data.ClassroomService
+import com.yuruan.neuqassist.data.CloudCache
+import com.yuruan.neuqassist.data.CloudCacheData
+import com.yuruan.neuqassist.data.CloudService
+import com.yuruan.neuqassist.data.CourseItem
+import com.yuruan.neuqassist.data.CourseFileParser
+import com.yuruan.neuqassist.data.DateUtil
+import com.yuruan.neuqassist.data.Keys
+import com.yuruan.neuqassist.data.Logger
+import com.yuruan.neuqassist.data.ProcessedClassroomData
+import com.yuruan.neuqassist.data.QueryResult
+import com.yuruan.neuqassist.data.ScheduleService
+import com.yuruan.neuqassist.data.SettingsStore
+import com.yuruan.neuqassist.data.SecretStore
+import com.yuruan.neuqassist.data.TermInfo
+import com.yuruan.neuqassist.data.TimeSlot
+import com.yuruan.neuqassist.data.HolidayService
+import com.yuruan.neuqassist.data.HapticService
+import com.yuruan.neuqassist.data.ScheduleViewUtil
+import com.yuruan.neuqassist.net.ClassroomQueryConfig
+import com.yuruan.neuqassist.net.WebvpnCrypto
+import com.yuruan.neuqassist.net.WebvpnSession
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * 主 ViewModel —— 编排各页业务逻辑（对应 HarmonyOS 端 Index.ets / ScheduleView.ets /
+ * XiaoQinView.ets / MainPage.ets 的 aboutToAppear / doQuery / updateRecentAll 等）
+ */
+class MainViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val context: Context = app.applicationContext
+    val settings = SettingsStore(context)
+    private val secrets = SecretStore.get(context)
+
+    // ===== 隐私闸门 =====
+    var privacyAgreed by mutableStateOf(false)
+        private set
+
+    // ===== 空教室页状态（对应 Index.ets） =====
+    var cloudSource by mutableStateOf(settings.cloudSource)
+    var dayOffset by mutableStateOf(0)
+    var slotIndex by mutableStateOf(AppConfig.nearestTimeSlotIndex())
+    var loading by mutableStateOf(false)
+    var progressText by mutableStateOf("")
+    var errorMsg by mutableStateOf("")
+    var result by mutableStateOf<QueryResult?>(null)
+    var cacheInfoText by mutableStateOf("")
+    var sourceText by mutableStateOf("")
+    var warningText by mutableStateOf("")
+    var bulkBusy by mutableStateOf(false)
+    var cooldownLeft by mutableStateOf(0)
+
+    // 账号设置（对应 Index.ets settingsPanel）
+    var username by mutableStateOf(settings.username)
+    var password by mutableStateOf(secrets.read(Keys.ALIAS_JWXT_PASSWORD))
+    var useWebvpn by mutableStateOf(settings.useWebvpn)
+    var authType by mutableStateOf(settings.authType)
+    var webvpnUsername by mutableStateOf(settings.webvpnUsername)
+    var webvpnPassword by mutableStateOf(secrets.read(Keys.ALIAS_WEBVPN_PASSWORD))
+    var serverUrl by mutableStateOf(settings.serverUrl)
+
+    // 会话（网页登录）
+    var sessionCookies by mutableStateOf(settings.sessionCookies)
+    var sessionMode by mutableStateOf(settings.sessionMode)
+
+    private var service: ClassroomService? = null
+    private var webChannelFailed = false
+
+    // ===== 课表页状态（对应 ScheduleView.ets） =====
+    var currentWeek by mutableStateOf(1)
+    var termStartDate by mutableStateOf(parseTermStart(settings.termStartDate))
+    var timeSlots by mutableStateOf(settings.loadTimeSlots())
+    var scheduleCourses by mutableStateOf(settings.loadCourses())
+    var restFlags by mutableStateOf(List(7) { false })
+    var workFlags by mutableStateOf(List(7) { false })
+    var importBusy by mutableStateOf(false)
+    var importError by mutableStateOf("")
+    var importStatus by mutableStateOf("")
+    var terms by mutableStateOf<List<TermInfo>>(emptyList())
+
+    private val holidayService = HolidayService()
+
+    /** 触感反馈（切周 / 时间滚轮），设备不支持时静默降级 */
+    private val haptics: HapticService? = try {
+        HapticService(context)
+    } catch (e: Exception) {
+        null
+    }
+
+    // ===== 小秦帮页状态（对应 XiaoQinView.ets） =====
+    var sessionModeLabel by mutableStateOf("")
+
+    // ===== 底部导航 =====
+    var currentTab by mutableStateOf(0)
+
+    // ===== WebView 网页登录结果 =====
+    var pendingWebSession by mutableStateOf<Pair<String, String>?>(null)
+
+    init {
+        viewModelScope.launch {
+            privacyAgreed = settings.isPrivacyAgreed()
+            if (privacyAgreed) {
+                loadInitialData()
+            }
+        }
+    }
+
+    // ===== 隐私闸门 =====
+
+    fun agreePrivacy() {
+        privacyAgreed = true
+        settings.setPrivacyAgreed(true)
+        viewModelScope.launch { loadInitialData() }
+    }
+
+    fun declinePrivacy() {
+        // 退出应用由 Activity 处理
+        privacyAgreed = false
+    }
+
+    private suspend fun loadInitialData() {
+        // 打开即显：有本地缓存时直接展示，不联网
+        try {
+            val cached = CloudCache.load(context)
+            if (cached != null) {
+                val slotKey = currentSlotKey()
+                val hit = CloudService.resultFromCache(
+                    cached, dayOffset, slotKey, cacheDayShift(cached)
+                )
+                if (hit != null) {
+                    result = hit
+                    cacheInfoText = "本地缓存 · 更新于 ${cached.updateTime}"
+                }
+            }
+        } catch (e: Exception) {
+            com.yuruan.neuqassist.data.Logger.warn("缓存展示失败: ${e.message}")
+        }
+        refreshWeekMeta()
+        sessionModeLabel = when (sessionMode) {
+            "" -> "未登录"
+            "webvpn" -> "已登录（WebVPN 会话）"
+            else -> "已登录（教务直连会话）"
+        }
+    }
+
+    // ===== 空教室查询 =====
+
+    private fun currentSlotKey(): String =
+        if (slotIndex >= AppConfig.TIME_SLOTS.size) "allday"
+        else AppConfig.TIME_SLOTS[slotIndex].fileSuffix
+
+    fun selectTab(index: Int) {
+        currentTab = index
+    }
+
+    fun setDay(offset: Int) {
+        dayOffset = offset
+        if (cloudSource && !loading) doQuery()
+    }
+
+    fun setSlot(index: Int) {
+        slotIndex = index
+    }
+
+    // 说明：以下 updateXxx 命名刻意避开 `var xxx by mutableStateOf(...)` 生成的合成
+    // setter（setXxx），否则会触发 JVM 签名冲突（Platform declaration clash）。
+    fun updateCloudSource(value: Boolean) {
+        cloudSource = value
+        settings.cloudSource = value
+    }
+
+    fun updateUsername(v: String) { username = v; settings.username = v; resetService() }
+    fun updatePassword(v: String) { password = v; secrets.save(Keys.ALIAS_JWXT_PASSWORD, v); resetService() }
+    fun updateUseWebvpn(v: Boolean) { useWebvpn = v; settings.useWebvpn = v; resetService() }
+    fun updateAuthType(v: String) { authType = v; settings.authType = v; resetService() }
+    fun updateWebvpnUsername(v: String) { webvpnUsername = v; settings.webvpnUsername = v; resetService() }
+    fun updateWebvpnPassword(v: String) { webvpnPassword = v; secrets.save(Keys.ALIAS_WEBVPN_PASSWORD, v); resetService() }
+    fun updateServerUrl(v: String) { serverUrl = v.trim(); settings.serverUrl = v.trim() }
+
+    /** 设置变更后使旧客户端失效，下次查询用新配置重新登录 */
+    private fun resetService() {
+        service = null
+        webChannelFailed = false
+    }
+
+    private fun buildConfig(): ClassroomQueryConfig {
+        val cfg = ClassroomQueryConfig()
+        cfg.username = this.username
+        cfg.password = this.password
+        cfg.webvpnEnabled = this.useWebvpn
+        // WebVPN 凭证允许与教务系统凭证不同：留空时回退到教务账号密码
+        cfg.webvpnUsername = if (this.webvpnUsername.isEmpty()) this.username
+        else this.webvpnUsername
+        cfg.webvpnPassword = if (this.webvpnPassword.isEmpty()) this.password
+        else this.webvpnPassword
+        cfg.webvpnAuthType = this.authType
+        return cfg
+    }
+
+    /**
+     * 经隐形 WebView 拉取 URL 的完整 HTML。
+     * 原生 http 栈在部分运营商网络下会被中途重置，WebView 走系统
+     * Chromium 网络栈不受影响（与 HarmonyOS 端 fetchViaWeb 同思路）。
+     */
+    private suspend fun fetchViaWeb(url: String): String =
+        WebFetchHelper.fetch(context, url)
+
+    /** 执行单时段 / 全天查询（对应 invokeQuery） */
+    private suspend fun invokeQuery(svc: ClassroomService) {
+        result = if (slotIndex >= AppConfig.TIME_SLOTS.size) {
+            svc.queryAllDay(dayOffset) { msg -> progressText = msg }
+        } else {
+            svc.querySlot(dayOffset, AppConfig.TIME_SLOTS[slotIndex]) { msg ->
+                progressText = msg
+            }
+        }
+    }
+
+    /** 本地缓存命中则直接展示（1 小时内有效，零联网）：返回是否命中 */
+    private suspend fun tryServeFromCache(): Boolean {
+        return try {
+            val cached = CloudCache.load(context) ?: return false
+            if (cached.fetchedAt <= 0) return false
+            if ((System.currentTimeMillis() - cached.fetchedAt) > 12 * 3600000L) return false
+            val hit = CloudService.resultFromCache(
+                cached, dayOffset, currentSlotKey(), cacheDayShift(cached)
+            ) ?: return false
+            result = hit
+            cacheInfoText = "本地缓存 · 更新于 ${cached.updateTime}"
+            sourceText = "数据来源：本地保存的数据（本次未联网）"
+            true
+        } catch (e: Exception) {
+            com.yuruan.neuqassist.data.Logger.warn("缓存命中判定失败: ${e.message}")
+            false
+        }
+    }
+
+    fun doQuery() {
+        if (loading) return
+        loading = true
+        errorMsg = ""
+        warningText = ""
+        sourceText = ""
+        result = null
+
+        viewModelScope.launch {
+            try {
+                // 本地缓存优先：一键更新落盘的数据 1 小时内直接展示，零联网
+                if (tryServeFromCache()) {
+                    loading = false
+                    progressText = ""
+                    return@launch
+                }
+
+                // 数据来源一：云端（neuq.tsiao.io，免登录，每小时更新，带本地缓存）
+                if (cloudSource) {
+                    try {
+                        val vpnCookies = if (sessionMode == "webvpn") sessionCookies else ""
+                        result = CloudService.fetchDay(
+                            context, dayOffset, currentSlotKey(),
+                            serverUrl, vpnCookies,
+                            { url -> fetchViaWeb(url) },
+                            { msg -> progressText = msg }
+                        )
+                        sourceText = if (serverUrl.isNotEmpty()) {
+                            "数据来源：云端数据（自建服务器）"
+                        } else {
+                            "数据来源：云端数据（公共镜像，免登录·每小时更新）"
+                        }
+                    } catch (e: Exception) {
+                        errorMsg = "${e.message}（云端来源，可切\"实时查询\"获取更精确数据）"
+                    } finally {
+                        loading = false
+                        progressText = ""
+                    }
+                    return@launch
+                }
+
+                // 数据来源二：教务系统实时查询（需登录会话或账号密码）
+                val hasUsableSession = sessionCookies.isNotEmpty() &&
+                    (sessionMode == "webvpn") == useWebvpn
+                if (!hasUsableSession && (username.isEmpty() || password.isEmpty())) {
+                    loading = false
+                    errorMsg = if (sessionCookies.isEmpty()) {
+                        "请先到「小秦帮 → 教务登录」完成一次网页登录（默认通道无需账号密码）"
+                    } else {
+                        "当前会话是${if (sessionMode == "webvpn") "WebVPN" else "教务直连"}模式，" +
+                            "与 WebVPN 开关不一致。请重新网页登录后再查询"
+                    }
+                    return@launch
+                }
+                val svc = service ?: ClassroomService(buildConfig()).also { service = it }
+                if (hasUsableSession) svc.applyWebSession(sessionCookies)
+
+                val useWebChannel = !webChannelFailed
+                if (useWebChannel) {
+                    svc.setWebQuery { date, b, e -> fetchViaWebEams(date, b, e) }
+                } else {
+                    svc.setWebQuery(null)
+                }
+                var effectiveWebChannel = useWebChannel
+                try {
+                    try {
+                        invokeQuery(svc)
+                    } catch (e: Exception) {
+                        if (useWebChannel && username.isNotEmpty() && password.isNotEmpty()) {
+                            webChannelFailed = true
+                            effectiveWebChannel = false
+                            svc.setWebQuery(null)
+                            com.yuruan.neuqassist.data.Logger.warn("网页通道失败，回退直连: ${e.message}")
+                            invokeQuery(svc)
+                        } else throw e
+                    }
+                    sourceText = if (effectiveWebChannel) {
+                        "数据来源：教务实时查询（网页通道）"
+                    } else {
+                        "数据来源：教务实时查询（直连方式）"
+                    }
+                } catch (e: Exception) {
+                    val sessionMatch = sessionCookies.isNotEmpty() &&
+                        (sessionMode == "webvpn") == useWebvpn
+                    val diag = " 诊断[传输:${if (useWebvpn) "WebVPN代理" else "教务直连"}" +
+                        "; 会话:${if (sessionCookies.isEmpty()) "无"
+                        else if (sessionMode == "webvpn") "WebVPN" else "教务直连"}" +
+                        "${if (sessionCookies.isEmpty()) "" else if (sessionMatch) "/已注入" else "/模式不匹配未注入"}" +
+                        "; 账号:${if (username.isEmpty()) "未填" else "已填"}]"
+                    errorMsg = "${e.message}$diag"
+                    service = null
+                } finally {
+                    loading = false
+                    progressText = ""
+                }
+            } catch (e: Exception) {
+                errorMsg = e.message ?: "查询失败"
+                loading = false
+                progressText = ""
+            }
+        }
+    }
+
+    /** WebVPN 限流冷却剩余秒数轮询 */
+    /**
+     * WebVPN 限流冷却倒计时轮询（T-14b-2）。
+     *
+     * 只在 cooldownLeft > 0 期间轮询，避免无限循环空转；冷却结束后协程自行退出。
+     */
+    init {
+        viewModelScope.launch {
+            while (true) {
+                val left = WebvpnSession.Cooldown.cooldownLeft
+                cooldownLeft = left
+                if (left <= 0) {
+                    // 未进入冷却：降频为 1 秒一次（仅用于发现冷却开始）
+                    delay(1000)
+                } else {
+                    delay(250)
+                }
+            }
+        }
+    }
+
+    fun cancelCooldown() {
+        WebvpnSession.Cooldown.cooldownCanceled = true
+    }
+
+    /**
+     * 实时查询的 WebView 同源通道：隐形 WebView 加载教务页面（复用网页登录
+     * 留下的全局 Cookie），注入同步 XHR 调用 free!search.action。
+     * 与 HarmonyOS 端 eamsQueryViaWeb 同源。
+     */
+    private suspend fun fetchViaWebEams(date: String, timeBegin: Int, timeEnd: Int): String {
+        val base = if (useWebvpn) {
+            WebvpnCrypto.buildResourceUrl(
+                AppConfig.DEFAULT_WEBVPN_BASE_URL,
+                AppConfig.DEFAULT_BASE_URL
+            )
+        } else AppConfig.DEFAULT_BASE_URL
+
+        val page = fetchViaWeb("${base}homeExt.action")
+        if (page.contains("form['password']") || page.contains("casLoginForm")) {
+            throw AppError.fetch("登录会话已失效，请重新网页登录")
+        }
+
+        val body = "classroom.building.id=&" +
+            "cycleTime.dateBegin=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
+            "cycleTime.dateEnd=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
+            "timeBegin=$timeBegin&timeEnd=$timeEnd&pageSize=1000&" +
+            "classroom.type.id=&classroom.campus.id=&seats=&classroom.name=&" +
+            "cycleTime.cycleCount=1&cycleTime.cycleType=1&roomApplyTimeType=0"
+        val js = "(function(){" +
+            "var x=new XMLHttpRequest();" +
+            "x.open('POST','classroom/apply/free!search.action',false);" +
+            "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');" +
+            "x.send('$body');" +
+            "window.__ncr = x.responseText;" +
+            "return x.status + '|' + String(x.responseText.length);" +
+            "})()"
+        val meta = WebFetchHelper.runJs(js)
+        val parts = meta.split("|")
+        val status = parts.getOrNull(0)?.toIntOrNull()
+        val total = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        if (status == null || total <= 0) {
+            throw AppError.fetch("教务页面内请求无响应（脚本返回: $meta），多半是会话已过期，请重新网页登录")
+        }
+        val html = WebFetchHelper.readJsString("window.__ncr", total)
+        if (html.contains("会话已经被过期") || !html.contains("gridtable")) {
+            throw AppError.fetch("教务返回异常响应（状态码 $status，$total 字节），请重新网页登录后重试")
+        }
+        return html
+    }
+
+    /**
+     * 一键更新近 5 天 × 6 个顺序时段（对应 updateRecentAll）：
+     * 串行 + 1.2s 限速防教务风控 → 汇总写入本地缓存（覆盖上一次）→ 展示当前所选。
+     */
+    fun updateRecentAll() {
+        if (loading) return
+        loading = true
+        bulkBusy = true
+        errorMsg = ""
+        cacheInfoText = ""
+        warningText = ""
+
+        viewModelScope.launch {
+            val DAYS = 5
+            try {
+                val hasUsableSession = sessionCookies.isNotEmpty() &&
+                    (sessionMode == "webvpn") == useWebvpn
+                if (!hasUsableSession && (username.isEmpty() || password.isEmpty())) {
+                    throw AppError.config("请先到「小秦帮 → 教务登录」完成一次网页登录")
+                }
+                val svc = service ?: ClassroomService(buildConfig()).also { service = it }
+                if (hasUsableSession) svc.applyWebSession(sessionCookies)
+                val useWebChannel = !webChannelFailed
+                svc.setWebQuery(
+                    if (useWebChannel) {
+                        { date, b, e -> fetchViaWebEams(date, b, e) }
+                    } else null
+                )
+
+                val rooms = mutableListOf<ProcessedClassroomData>()
+                val roomDays = mutableListOf<Int>()
+                val dayCounts = MutableList(DAYS) { 0 }
+                var failed = 0
+                for (d in 0 until DAYS) {
+                    for (slotKey in AppConfig.SEQUENTIAL_SLOTS) {
+                        val slot = AppConfig.TIME_SLOTS.firstOrNull { it.fileSuffix == slotKey }
+                            ?: continue
+                        progressText = "更新第 ${d + 1}/$DAYS 天 · ${slot.label}"
+                        try {
+                            val r = svc.querySlot(d, slot)
+                            for (g in r.groups) {
+                                for (room in g.rooms) {
+                                    rooms.add(room)
+                                    roomDays.add(d)
+                                }
+                                dayCounts[d] += g.rooms.size
+                            }
+                        } catch (e: Exception) {
+                            failed++
+                            val msg = e.message ?: ""
+                            if (msg.contains("会话已失效") || msg.contains("会话已过期")) throw e
+                            com.yuruan.neuqassist.data.Logger.warn("更新失败（第 ${d + 1} 天 ${slot.label}）: $msg")
+                        }
+                        delay(1200) // 限速：教务有「不要过快点击」风控
+                    }
+                }
+                if (rooms.isEmpty()) {
+                    throw AppError.fetch("未获取到任何数据（$failed 个时段失败）")
+                }
+                // 异常判定：空结果通常不是真实情况（节假日本应更空）
+                val emptyDays = (0 until DAYS).filter { dayCounts[it] == 0 }.map { it + 1 }
+                var warn = ""
+                if (emptyDays.size >= 3) {
+                    val list = emptyDays.joinToString("、")
+                    val tailEmpty = dayCounts[DAYS - 3] == 0 &&
+                        dayCounts[DAYS - 2] == 0 && dayCounts[DAYS - 1] == 0
+                    warn = "第 $list 天未获取到任何教室（$DAYS 天中有 ${emptyDays.size} 天为空）。" +
+                        (if (tailEmpty) "末尾连续多天为空属典型的抓取异常特征（教务风控限流或会话超时）；" else "") +
+                        "节假日本应出现更多空闲教室，大面积为空通常不是真实情况，建议间隔几分钟后重新更新。"
+                } else {
+                    val nonZero = dayCounts.filter { it > 0 }
+                    if (nonZero.size >= 3 && nonZero.all { it == nonZero[0] }) {
+                        warn = "各天记录数完全一致（均为 ${nonZero[0]} 条），疑为教务返回了缓存旧数据" +
+                            "（「不要过快点击」风控特征），建议间隔几分钟后重新更新。"
+                    } else if (emptyDays.isNotEmpty()) {
+                        warn = "第 ${emptyDays.joinToString("、")} 天未获取到教室，请留意是否为抓取异常。"
+                    }
+                }
+                warningText = warn
+
+                val stamp = DateUtil.stampNow()
+                CloudCache.save(context, stamp, rooms, roomDays)
+                CloudService.clearResultCache()
+                cacheInfoText = "本地缓存 · 更新于 $stamp"
+                sourceText = "数据来源：教务实时查询（网页通道）· 已保存到本地"
+
+                // 立即展示当前所选（用内存中的新数据，免再读盘）
+                val data = CloudCacheData().apply {
+                    updateTime = stamp
+                    fetchedAt = System.currentTimeMillis()
+                    this.rooms = rooms.toMutableList()
+                    this.roomDays = roomDays.toMutableList()
+                    buildIndex()
+                }
+                CloudService.resultFromCache(data, dayOffset, currentSlotKey())?.let {
+                    result = it
+                }
+            } catch (e: Exception) {
+                errorMsg = "${e.message}（一键更新）"
+                service = null
+            } finally {
+                loading = false
+                bulkBusy = false
+                progressText = ""
+            }
+        }
+    }
+
+    // ===== 网页登录会话 =====
+
+    /**
+     * 网页登录成功后调用：从 WebView CookieManager 取 Cookie 灌入原生请求。
+     * mode: "eams" 或 "webvpn"
+     */
+    fun onWebLoginSuccess(mode: String) {
+        val cookieUrl = if (mode == "webvpn") {
+            "https://vpn.neuq.edu.cn/"
+        } else {
+            "http://jwxt.neuq.edu.cn/"
+        }
+        val cookies = CookieManager.getInstance().getCookie(cookieUrl) ?: ""
+        if (cookies.isEmpty()) return
+        sessionCookies = cookies
+        sessionMode = mode
+        useWebvpn = mode == "webvpn"
+        settings.sessionCookies = cookies
+        settings.sessionMode = mode
+        settings.useWebvpn = mode == "webvpn"
+        service = null
+        webChannelFailed = false
+        errorMsg = ""
+        sessionModeLabel = if (mode == "webvpn") "已登录（WebVPN 会话）" else "已登录（教务直连会话）"
+    }
+
+    /** 退出登录 */
+    fun logout() {
+        sessionCookies = ""
+        sessionMode = ""
+        settings.sessionCookies = ""
+        settings.sessionMode = ""
+        service = null
+        sessionModeLabel = "未登录"
+    }
+
+    // ===== 课表 =====
+
+    private fun parseTermStart(raw: String): java.util.Date {
+        val parts = raw.split("-")
+        if (parts.size != 3) return defaultTermStart()
+        return java.util.Calendar.getInstance().apply {
+            clear()
+            set(parts[0].toIntOrNull() ?: 2026, (parts[1].toIntOrNull() ?: 8) - 1, parts[2].toIntOrNull() ?: 31)
+        }.time
+    }
+
+    private fun defaultTermStart(): java.util.Date =
+        java.util.Calendar.getInstance().apply {
+            clear()
+            set(2026, 7, 31) // 2026-08-31 周一
+        }.time
+
+    var realWeek: Int = 1
+        private set
+
+    fun refreshWeekMeta() {
+        realWeek = ScheduleViewUtil.computeRealWeek(termStartDate)
+        if (currentWeek !in 1..20) currentWeek = realWeek
+        viewModelScope.launch {
+            val dates = ScheduleViewUtil.weekDates(termStartDate, currentWeek)
+            val years = dates.map {
+                java.util.Calendar.getInstance().apply { time = it }.get(java.util.Calendar.YEAR)
+            }.distinct()
+            for (y in years) holidayService.getYearMap(y)
+            val flags = holidayService.getFlags(dates)
+            restFlags = flags.restFlags
+            workFlags = flags.workFlags
+        }
+    }
+
+    fun switchWeek(delta: Int) {
+        val next = currentWeek + delta
+        if (next < 1 || next > 20) return
+        currentWeek = next
+        refreshWeekMeta()
+    }
+
+    fun setTermStart(date: java.util.Date) {
+        val monday = ScheduleViewUtil.mondayOf(date)
+        termStartDate = monday
+        settings.termStartDate = ScheduleViewUtil.toKey(monday)
+        realWeek = ScheduleViewUtil.computeRealWeek(monday)
+        currentWeek = realWeek
+        refreshWeekMeta()
+    }
+
+    /** 切周触感反馈（对应原端 switchWeek 的 hapticService.tick()） */
+    fun hapticTick() {
+        haptics?.tick()
+    }
+
+    fun saveTimeSlots(slots: List<TimeSlot>) {
+        timeSlots = slots
+        settings.saveTimeSlots(slots)
+    }
+
+    fun addTimeSlot() {
+        if (timeSlots.size >= 15) return
+        val last = timeSlots.last()
+        val lastEnd = ScheduleViewUtil.toMinutes(last.endTime)
+        var start = if (lastEnd >= 0) lastEnd + 10 else 8 * 60
+        if (start + 45 > 1440) start = 8 * 60
+        timeSlots = timeSlots + TimeSlot(
+            ScheduleViewUtil.fromMinutes(start),
+            ScheduleViewUtil.fromMinutes(start + 45)
+        )
+    }
+
+    fun removeTimeSlot(index: Int) {
+        if (timeSlots.size <= 1) return
+        timeSlots = timeSlots.filterIndexed { i, _ -> i != index }
+    }
+
+    fun saveCourses(courses: List<CourseItem>) {
+        scheduleCourses = courses
+        settings.saveCourses(courses)
+    }
+
+    fun addOrUpdateCourse(course: CourseItem) {
+        val list = scheduleCourses.toMutableList()
+        val idx = list.indexOfFirst { it.id == course.id }
+        if (idx >= 0) list[idx] = course else list.add(course)
+        saveCourses(list)
+    }
+
+    fun deleteCourse(id: String) {
+        saveCourses(scheduleCourses.filter { it.id != id })
+    }
+
+    /**
+     * 从教务「导出」文件导入课表（免登录通道）
+     * content: 文件文本内容
+     */
+    fun importFromFile(content: String, onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val parsed = CourseFileParser.parse(content)
+                if (parsed == null || parsed.courses.isEmpty()) {
+                    onDone(false, "未能从文件中识别到课表，请确认选择的是教务「导出」的学生课表文件")
+                    return@launch
+                }
+                val courses = parsed.courses.toMutableList()
+                ScheduleViewUtil.dedupeCourseIds(courses)
+                saveCourses(courses)
+                val sem = if (parsed.semesterName.isEmpty()) "" else "（${parsed.semesterName}）"
+                onDone(true, "导入成功：${courses.size} 门课程$sem")
+            } catch (e: Exception) {
+                onDone(false, "文件导入失败: ${e.message}")
+            }
+        }
+    }
+
+    /** 网页通道导入课表：走 WebView 同源注入（对应 openEngine + runTerms + pickTerm） */
+    fun importScheduleViaWeb(semesterId: String, onDone: (Boolean, String) -> Unit) {
+        importBusy = true
+        importError = ""
+        importStatus = "拉取课表并解析…"
+        viewModelScope.launch {
+            try {
+                val svc = ScheduleService(buildConfig())
+                if (sessionCookies.isNotEmpty()) svc.applyWebSession(sessionCookies)
+                val termName = terms.firstOrNull { it.id == semesterId }?.name ?: ""
+                val r = svc.fetchSchedule(semesterId, termName)
+                val items = r.courses.mapIndexed { idx, c ->
+                    CourseItem(
+                        id = "${c.name}-${c.day}-${c.startSection}-${c.weeks.joinToString(".")}",
+                        name = c.name,
+                        teacher = c.teacher,
+                        position = c.position,
+                        day = c.day,
+                        startSection = c.startSection,
+                        endSection = c.endSection,
+                        colorIndex = idx % 8,
+                        weeks = c.weeks,
+                        remark = ""
+                    )
+                }.toMutableList()
+                ScheduleViewUtil.dedupeCourseIds(items)
+                saveCourses(items)
+                if (r.timeSlots.isNotEmpty()) saveTimeSlots(r.timeSlots)
+                onDone(true, "导入成功：${items.size} 门课程${if (termName.isEmpty()) "" else "（$termName）"}")
+            } catch (e: Exception) {
+                importError = e.message ?: "导入失败"
+                onDone(false, importError)
+            } finally {
+                importBusy = false
+                importStatus = ""
+            }
+        }
+    }
+
+    /** 拉取学期列表（对应 runTerms） */
+    fun fetchTerms(onDone: (Boolean, String) -> Unit) {
+        importBusy = true
+        importError = ""
+        importStatus = "获取学期列表…"
+        viewModelScope.launch {
+            try {
+                val svc = ScheduleService(buildConfig())
+                if (sessionCookies.isNotEmpty()) svc.applyWebSession(sessionCookies)
+                terms = svc.fetchTerms()
+                importStatus = "共 ${terms.size} 个学期，请选择要导入的学期"
+                onDone(true, "")
+            } catch (e: Exception) {
+                importError = e.message ?: "获取学期列表失败"
+                onDone(false, importError)
+            } finally {
+                importBusy = false
+            }
+        }
+    }
+
+    // ===== 通用 =====
+
+    /** 缓存基准日偏移：跨天后直接用今天的 dayOffset 匹配会展示错日期的数据 */
+    private fun cacheDayShift(cached: com.yuruan.neuqassist.data.CloudCacheData): Int {
+        val base = java.util.Calendar.getInstance().apply {
+            timeInMillis = cached.fetchedAt
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val today = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val shift = Math.round((today - base) / 86400000.0).toInt()
+        return if (shift < 0) 0 else shift
+    }
+}
