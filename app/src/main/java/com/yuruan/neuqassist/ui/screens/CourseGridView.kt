@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.data.CourseBlockLayout
 import com.yuruan.neuqassist.data.CourseItem
+import com.yuruan.neuqassist.data.Personalize
 import com.yuruan.neuqassist.data.TimeSlot
 import com.yuruan.neuqassist.data.layoutCourseBlocks
 import com.yuruan.neuqassist.data.splitCoursePlace
@@ -78,6 +80,10 @@ fun CourseGridView(
     restFlags: List<Boolean>,
     workFlags: List<Boolean>,
     lineWeightSolid: Boolean,
+    /** 课表文字大小档位键（个性化设置 → 课表显示；App 状态实时联动） */
+    fontScaleKey: String,
+    /** 课表卡片圆角（dp，2-16；个性化设置 → 课表显示） */
+    cardRadiusDp: Int,
     onCourseClick: (CourseItem) -> Unit,
     modifier: Modifier = Modifier,
     availableHeight: Dp = 480.dp
@@ -91,6 +97,8 @@ fun CourseGridView(
     }
     val gridLine = if (lineWeightSolid) GridLineSolid else GridLineLight
     val layouts = layoutCourseBlocks(courses)
+    // 今日态强调色跟随主题预设（个性化设置 → 主题配色）
+    val accent = MaterialTheme.colorScheme.primary
 
     Column(modifier = modifier.fillMaxWidth()) {
         // ===== 顶部星期表头 =====
@@ -99,24 +107,25 @@ fun CourseGridView(
                 .fillMaxWidth()
                 .height(HEADER_H)
         ) {
-            // 左上角：月份
+            // 左上角：月份（网格透明衬底由宿主背景层提供，对应 hap 沉浸网格）
             Box(
                 modifier = Modifier
                     .width(SIDE_W)
                     .fillMaxSize()
-                    .background(Color.White)
                     .border(width = 1.dp, color = FrameLine),
                 contentAlignment = Alignment.Center
             ) {
                 Text(monthLabel, fontSize = 11.sp, color = TextSecondary)
             }
-            // 7 天列表头
+            // 7 天列表头（今日列强调色跟随主题预设）
             for (d in 0 until 7) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxSize()
-                        .background(if (d == todayIndex) Color(0x1F007DFF) else Color.White)
+                        .background(
+                            if (d == todayIndex) accent.copy(alpha = 0.12f) else Color.Transparent
+                        )
                         .border(width = 1.dp, color = FrameLine),
                     contentAlignment = Alignment.Center
                 ) {
@@ -126,7 +135,7 @@ fun CourseGridView(
                                 text = DAY_CHARS[d],
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = if (d == todayIndex) Color(0xFF007DFF) else TextPrimary
+                                color = if (d == todayIndex) accent else TextPrimary
                             )
                             if (d < restFlags.size && restFlags[d]) {
                                 Text(
@@ -162,7 +171,6 @@ fun CourseGridView(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(slotH)
-                            .background(Color.White)
                             .border(width = 1.dp, color = gridLine),
                         contentAlignment = Alignment.Center
                     ) {
@@ -183,14 +191,14 @@ fun CourseGridView(
                 }
             }
 
-            // 7 天列
+            // 7 天列（今日列轻微着色，色调随主题预设）
             for (d in 0 until 7) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .height(slotH * slotCount)
                         .background(
-                            if (d == todayIndex) Color(0x0D007DFF) else Color.White
+                            if (d == todayIndex) accent.copy(alpha = 0.05f) else Color.Transparent
                         )
                         .border(width = 1.dp, color = gridLine)
                 ) {
@@ -235,6 +243,8 @@ fun CourseGridView(
                                 val colW = maxWidth * widthFrac
                                 CourseBlock(
                                     layout = layout,
+                                    fontScaleKey = fontScaleKey,
+                                    cardRadiusDp = cardRadiusDp,
                                     modifier = Modifier
                                         .offset(
                                             x = maxWidth * leftFrac,
@@ -253,10 +263,12 @@ fun CourseGridView(
     }
 }
 
-/** 单个课程块 */
+/** 单个课程块（字号随档位系数缩放、圆角随设置；标准档 = 历史渲染不变） */
 @Composable
 private fun CourseBlock(
     layout: CourseBlockLayout,
+    fontScaleKey: String,
+    cardRadiusDp: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -267,7 +279,7 @@ private fun CourseBlock(
     Box(
         modifier = modifier
             .padding(1.dp)
-            .background(color, RoundedCornerShape(4.dp))
+            .background(color, RoundedCornerShape(cardRadiusDp.dp))
             .clickable { onClick() },
         contentAlignment = Alignment.TopStart
     ) {
@@ -277,17 +289,17 @@ private fun CourseBlock(
         ) {
             Text(
                 text = course.name,
-                fontSize = 11.sp,
+                fontSize = Personalize.scaleCourseFont(11f, fontScaleKey).sp,
                 fontWeight = FontWeight.Medium,
                 color = Color.White,
                 maxLines = if (layout.span >= 2) 4 else 2,
                 overflow = TextOverflow.Ellipsis,
-                lineHeight = 13.sp
+                lineHeight = Personalize.scaleCourseFont(13f, fontScaleKey).sp
             )
             if (course.teacher.isNotEmpty() && layout.span >= 2) {
                 Text(
                     text = course.teacher,
-                    fontSize = 9.sp,
+                    fontSize = Personalize.scaleCourseFont(9f, fontScaleKey).sp,
                     color = Color.White.copy(alpha = 0.9f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -296,7 +308,7 @@ private fun CourseBlock(
             if (place.building.isNotEmpty() && layout.span >= 2) {
                 Text(
                     text = place.building,
-                    fontSize = 9.sp,
+                    fontSize = Personalize.scaleCourseFont(9f, fontScaleKey).sp,
                     color = Color.White.copy(alpha = 0.9f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -304,7 +316,7 @@ private fun CourseBlock(
                 if (place.room.isNotEmpty()) {
                     Text(
                         text = place.room,
-                        fontSize = 9.sp,
+                        fontSize = Personalize.scaleCourseFont(9f, fontScaleKey).sp,
                         color = Color.White.copy(alpha = 0.9f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -313,7 +325,7 @@ private fun CourseBlock(
             } else if (place.room.isNotEmpty()) {
                 Text(
                     text = place.room,
-                    fontSize = 9.sp,
+                    fontSize = Personalize.scaleCourseFont(9f, fontScaleKey).sp,
                     color = Color.White.copy(alpha = 0.9f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,7 +39,6 @@ import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.data.CalendarPdf
 import com.yuruan.neuqassist.net.HttpService
 import com.yuruan.neuqassist.ui.theme.ErrorRed
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import com.yuruan.neuqassist.ui.theme.TextSecondary
 
@@ -117,7 +117,7 @@ fun CalendarPdfScreen(
             TextButton(onClick = {
                 CalendarPdf.clearCache(context)
                 state = "loading"
-            }) { Text("重新下载", fontSize = 13.sp, color = PrimaryBlue) }
+            }) { Text("重新下载", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
         }
 
         when (state) {
@@ -126,7 +126,7 @@ fun CalendarPdfScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = PrimaryBlue)
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.height(12.dp))
                     Text("正在下载校历…", fontSize = 13.sp, color = TextSecondary)
                 }
@@ -149,7 +149,7 @@ fun CalendarPdfScreen(
                             state = "loading"
                             errorMsg = ""
                         },
-                        color = PrimaryBlue,
+                        color = MaterialTheme.colorScheme.primary,
                         shape = RoundedCornerShape(20.dp)
                     ) {
                         Text(
@@ -175,7 +175,7 @@ fun CalendarPdfScreen(
                     Text(
                         text = "‹ 上一页",
                         fontSize = 14.sp,
-                        color = if (currentPage > 0) PrimaryBlue else TextSecondary,
+                        color = if (currentPage > 0) MaterialTheme.colorScheme.primary else TextSecondary,
                         modifier = Modifier
                             .clickable(enabled = currentPage > 0) { currentPage-- }
                             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -189,7 +189,7 @@ fun CalendarPdfScreen(
                     Text(
                         text = "下一页 ›",
                         fontSize = 14.sp,
-                        color = if (currentPage < pageCount - 1) PrimaryBlue else TextSecondary,
+                        color = if (currentPage < pageCount - 1) MaterialTheme.colorScheme.primary else TextSecondary,
                         modifier = Modifier
                             .clickable(enabled = currentPage < pageCount - 1) { currentPage++ }
                             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -210,7 +210,7 @@ fun CalendarPdfScreen(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator(color = PrimaryBlue)
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         }
                     } else {
                         Image(

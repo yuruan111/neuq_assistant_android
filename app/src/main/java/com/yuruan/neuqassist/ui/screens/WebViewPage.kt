@@ -58,7 +58,6 @@ import android.webkit.WebViewClient
 import com.yuruan.neuqassist.data.Keys
 import com.yuruan.neuqassist.net.WebvpnFingerprint
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import com.yuruan.neuqassist.ui.theme.TextTertiary
@@ -225,7 +224,7 @@ fun WebViewPage(
 
             if (loading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = PrimaryBlue)
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 }
             }
 
@@ -373,7 +372,7 @@ fun WebLoginPage(
                     onSessionExtracted(cookies)
                 }
             }) {
-                Text("提取会话", fontSize = 13.sp, color = PrimaryBlue)
+                Text("提取会话", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             }
         }
 
@@ -495,7 +494,7 @@ fun WebLoginPage(
                                 Text(
                                     text = "在浏览器中打开",
                                     fontSize = 13.sp,
-                                    color = PrimaryBlue,
+                                    color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.clickable {
                                         try {
                                             context.startActivity(
@@ -510,7 +509,7 @@ fun WebLoginPage(
                                 Text(
                                     text = "重试",
                                     fontSize = 13.sp,
-                                    color = PrimaryBlue,
+                                    color = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.clickable {
                                         stuck = false
                                         errorText = ""
@@ -532,7 +531,7 @@ fun WebLoginPage(
             if (loading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = PrimaryBlue)
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = if (mode == "webvpn") {

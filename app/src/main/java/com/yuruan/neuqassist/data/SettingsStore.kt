@@ -3,6 +3,7 @@ package com.yuruan.neuqassist.data
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 /**
  * 设置仓库 —— 移植自 HarmonyOS 端各页的 preferences 读写逻辑
@@ -181,12 +182,30 @@ class SettingsStore(context: Context) {
         set(v) = putString(Keys.KEY_BG_IMAGE_PATH, v)
 
     var bgDim: Float
-        get() = getFloatCompat(Keys.KEY_BG_DIM, 0.88f)
+        get() = Personalize.normalizeBgDim(getFloatCompat(Keys.KEY_BG_DIM, Personalize.DEFAULT_BG_DIM))
         set(v) = putFloatCompat(Keys.KEY_BG_DIM, v)
 
     var lineWeight: String
-        get() = getString(Keys.KEY_LINE_WEIGHT, "solid")
+        get() = Personalize.normalizeLineWeight(getString(Keys.KEY_LINE_WEIGHT, Personalize.DEFAULT_LINE_WEIGHT))
         set(v) = putString(Keys.KEY_LINE_WEIGHT, v)
+
+    // ===== 个性化（校验规则与 hap common/Personalize.ets 一致，读取侧即回退默认值） =====
+
+    var themePreset: String
+        get() = Personalize.normalizeThemeKey(getString(Keys.KEY_THEME_PRESET, Personalize.DEFAULT_THEME_KEY))
+        set(v) = putString(Keys.KEY_THEME_PRESET, v)
+
+    var scheduleFontScale: String
+        get() = Personalize.normalizeFontScale(getString(Keys.KEY_SCHEDULE_FONT_SCALE, Personalize.DEFAULT_FONT_SCALE))
+        set(v) = putString(Keys.KEY_SCHEDULE_FONT_SCALE, v)
+
+    var scheduleCardRadius: Int
+        get() = Personalize.normalizeCardRadius(getIntCompat(Keys.KEY_SCHEDULE_CARD_RADIUS, Personalize.DEFAULT_CARD_RADIUS))
+        set(v) = putInt(Keys.KEY_SCHEDULE_CARD_RADIUS, v)
+
+    var defaultLaunchTab: Int
+        get() = Personalize.normalizeLaunchTab(getIntCompat(Keys.KEY_DEFAULT_LAUNCH_TAB, Personalize.DEFAULT_LAUNCH_TAB))
+        set(v) = putInt(Keys.KEY_DEFAULT_LAUNCH_TAB, v)
 
     private fun getFloatCompat(key: String, default: Float): Float =
         try {
@@ -194,6 +213,19 @@ class SettingsStore(context: Context) {
         } catch (e: ClassCastException) {
             // 旧数据以字符串存放时的兼容路径
             prefs.getString(key, null)?.toFloatOrNull() ?: default
+        }
+
+    /** Int 兼容读取：历史数据以字符串 / 浮点落盘时转换为 Int，无法转换回退默认 */
+    private fun getIntCompat(key: String, default: Int): Int =
+        try {
+            prefs.getInt(key, default)
+        } catch (e: ClassCastException) {
+            val raw = try {
+                prefs.getFloat(key, Float.NaN)
+            } catch (e: ClassCastException) {
+                prefs.getString(key, null)?.toFloatOrNull() ?: Float.NaN
+            }
+            if (raw.isNaN()) default else raw.roundToInt()
         }
 
     private fun putFloatCompat(key: String, value: Float) =

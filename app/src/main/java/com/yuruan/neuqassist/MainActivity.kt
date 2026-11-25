@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,12 +33,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,7 +70,6 @@ import com.yuruan.neuqassist.ui.screens.WebLoginPage
 import com.yuruan.neuqassist.ui.screens.XiaoQinScreen
 import com.yuruan.neuqassist.ui.screens.weeksText
 import com.yuruan.neuqassist.ui.theme.NEUQTheme
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import java.util.Calendar
 
@@ -80,12 +87,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            NEUQTheme {
+            // 主题强调色由个性化设置驱动（对应 hap AppStorage 的 themePrimary）：
+            // 切换预设时整个 setContent 重组，底栏选中态 / 按钮 / 滑块 / 课表今日态全部联动
+            val vm: MainViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+            NEUQTheme(primary = vm.themePrimary) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFFF2F3F5)
                 ) {
-                    MainScreen(onExitApp = { finish() })
+                    MainScreen(onExitApp = { finish() }, vm = vm)
                 }
             }
         }
@@ -109,7 +119,13 @@ fun MainScreen(
     onExitApp: () -> Unit,
     vm: MainViewModel = viewModel()
 ) {
-    var currentTab by remember { mutableStateOf(Tab.SCHEDULE) }
+    // 底部栏目：冷启动首帧取「个性化设置 → 默认启动栏目」；进程内切栏不回写偏好。
+    // rememberSaveable 保证旋转 / 进程重建时恢复用户当次所在栏目（存恢复态），
+    // 与持久化的默认栏目互不覆盖（对应 hap 隐私闸门放行时一次性应用 launchTab 的语义）
+    var currentTabIndex by rememberSaveable {
+        mutableIntStateOf(vm.settings.defaultLaunchTab)
+    }
+    val currentTab = Tab.entries[currentTabIndex.coerceIn(0, Tab.entries.size - 1)]
     var showWebLogin by remember { mutableStateOf(false) }
     var webLoginMode by remember { mutableStateOf("webvpn") }
     // 应用内网页查看（校历等）：非空时全屏显示 WebViewPage
@@ -172,8 +188,14 @@ fun MainScreen(
     }
 
     // ===== 隐私闸门 =====
+    // 与 hap MainPage / MainPageImmersive 一致：闸门页也衬全局背景（含保护层）
     if (!vm.privacyAgreed) {
         Box(modifier = Modifier.fillMaxSize()) {
+            AppBackdrop(
+                bgEnabled = vm.bgEnabled,
+                bgImagePath = vm.bgImagePath,
+                bgDim = vm.bgDim
+            )
             ConsentDialog(
                 onAgree = { vm.agreePrivacy() },
                 onDecline = { onExitApp() }
@@ -242,6 +264,13 @@ fun MainScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        // 全局背景层（最底）：自定义图 / 内置图 + 浅色渐变保护层，
+        // 各页根布局改为透明后由此透出（对应 hap Backdrop + 各页保护层）
+        AppBackdrop(
+            bgEnabled = vm.bgEnabled,
+            bgImagePath = vm.bgImagePath,
+            bgDim = vm.bgDim
+        )
         Column(modifier = Modifier.fillMaxSize()) {
             // 内容区
             // ⚠️ 顶部安全区避让：enableEdgeToEdge() 后内容会画到状态栏/挖孔下面，
@@ -267,7 +296,9 @@ fun MainScreen(
                         todayIndex = todayIndex(vm.termStartDate, vm.currentWeek, vm.realWeek),
                         restFlags = vm.restFlags,
                         workFlags = vm.workFlags,
-                        lineWeightSolid = vm.settings.lineWeight == "solid",
+                        lineWeightSolid = vm.lineWeightSolid,
+                        fontScaleKey = vm.scheduleFontScale,
+                        cardRadiusDp = vm.scheduleCardRadius,
                         onSwitchWeek = {
                             vm.hapticTick()
                             vm.switchWeek(it)
@@ -306,6 +337,7 @@ fun MainScreen(
 
                     Tab.XIAOQIN -> XiaoQinScreen(
                         sessionModeLabel = vm.sessionModeLabel,
+                        vm = vm,
                         onWebLogin = {
                             webLoginMode = "webvpn"
                             showWebLogin = true
@@ -319,7 +351,7 @@ fun MainScreen(
             // 底部导航
             BottomNavBar(
                 current = currentTab,
-                onSelect = { currentTab = it }
+                onSelect = { currentTabIndex = it.ordinal }
             )
         }
 
@@ -633,6 +665,89 @@ private fun AdjustPanelDialog(
     }
 }
 
+/**
+ * 全局背景层（对应 hap MainPageImmersive.Backdrop + 各页保护层，三态）：
+ *   ① 启用 + 自定义背景存在 → 自定义图铺满（已复制进应用沙箱，无临时授权问题）
+ *   ② 启用（无自定义 / 自定义文件已失效）→ 内置背景图（与 hap 同源素材 bg_scene）
+ *   ③ 关闭 → 不画图，仅保护层（完全不透明，等同无背景）
+ * 保护层为浅色渐变（#F2F3F5 → #E9EBF8），不透明度 = 背景强度（0.6-1）：
+ * 值越大层越实，深色正文在任意背景（含照片纹理）上都有稳定对比度。
+ */
+@Composable
+private fun AppBackdrop(bgEnabled: Boolean, bgImagePath: String, bgDim: Float) {
+    // 自定义图按需取样解码（大图降采样防 OOM）；路径变更 / 文件失效时重新判定
+    var customImage by remember(bgImagePath) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(bgImagePath) {
+        if (bgImagePath.isEmpty()) {
+            customImage = null
+            return@LaunchedEffect
+        }
+        val decoded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            decodeSampledBitmap(java.io.File(bgImagePath))
+        }
+        customImage = decoded?.asImageBitmap()
+    }
+
+    if (bgEnabled) {
+        val img = customImage
+        if (img != null) {
+            Image(
+                bitmap = img,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            // 无自定义图 / 自定义失效（解码为空）→ 内置默认背景兜底
+            Image(
+                painter = painterResource(com.yuruan.neuqassist.R.drawable.bg_scene),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+
+    // 内容保护层：透明度由「个性化设置 → 背景强度」控制（关闭背景时完全不透明）
+    val layerAlpha = if (bgEnabled) bgDim.coerceIn(0.6f, 1f) else 1f
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFFF2F3F5).copy(alpha = layerAlpha),
+                        Color(0xFFE9EBF8).copy(alpha = layerAlpha)
+                    )
+                )
+            )
+    )
+}
+
+/**
+ * 自定义背景取样解码：先读尺寸再按屏幕约束降采样，失败（文件损坏 / 已删除 /
+ * 内存不足）返回 null，由调用方回退内置背景，绝不抛出阻断渲染。
+ */
+private fun decodeSampledBitmap(file: java.io.File): android.graphics.Bitmap? {
+    if (!file.exists() || !file.isFile) return null
+    return try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxDim / (sample * 2) >= 1080) sample *= 2
+        android.graphics.BitmapFactory.decodeFile(
+            file.absolutePath,
+            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        )
+    } catch (e: Throwable) {
+        // 损坏图片 / OOM 等：按文件失效处理（回退内置背景），不阻断渲染
+        com.yuruan.neuqassist.data.Logger.warn("自定义背景解码失败，回退内置背景: ${e.message}")
+        null
+    }
+}
+
 /** 底部导航栏（对应原端 Tabs barPosition.End） */
 @Composable
 private fun BottomNavBar(current: Tab, onSelect: (Tab) -> Unit) {
@@ -662,7 +777,8 @@ private fun BottomNavBar(current: Tab, onSelect: (Tab) -> Unit) {
                         text = tab.title,
                         fontSize = if (selected) 15.sp else 13.sp,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (selected) PrimaryBlue else Color(0x99182431)
+                        // 选中态强调色跟随主题预设（个性化设置实时联动）
+                        color = if (selected) MaterialTheme.colorScheme.primary else Color(0x99182431)
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     // 选中态指示条：宽度随选中状态变化（0 → 20%）
@@ -671,7 +787,7 @@ private fun BottomNavBar(current: Tab, onSelect: (Tab) -> Unit) {
                         modifier = Modifier
                             .height(3.dp)
                             .fillMaxWidth(fraction)
-                            .background(PrimaryBlue, RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
                     )
                 }
             }

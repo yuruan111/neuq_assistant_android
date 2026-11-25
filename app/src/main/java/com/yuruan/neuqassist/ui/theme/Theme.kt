@@ -91,11 +91,15 @@ private val AppTypography = Typography(
 @Composable
 fun NEUQTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    /** 主题强调色（个性化设置 → 主题配色；默认蓝 = 原端 #007DFF，由调用方按预设传入） */
+    primary: Color = PrimaryBlue,
     content: @Composable () -> Unit
 ) {
-    // 原端仅浅色主题（深色资源存在但主流程为浅色），此处固定浅色保证视觉一致
+    // 原端仅浅色主题（深色资源存在但主流程为浅色），此处固定浅色保证视觉一致；
+    // 强调色统一走 MaterialTheme.colorScheme.primary，底栏选中态 / 按钮 / 滑块 /
+    // 开关 / 课表今日态等全部联动，正文深色不随主题变化
     MaterialTheme(
-        colorScheme = LightColors,
+        colorScheme = LightColors.copy(primary = primary, secondary = primary),
         typography = AppTypography,
         content = content
     )

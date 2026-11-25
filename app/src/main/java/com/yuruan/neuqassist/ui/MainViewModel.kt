@@ -6,6 +6,7 @@ import android.webkit.CookieManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.yuruan.neuqassist.data.AppConfig
@@ -19,6 +20,7 @@ import com.yuruan.neuqassist.data.CourseFileParser
 import com.yuruan.neuqassist.data.DateUtil
 import com.yuruan.neuqassist.data.Keys
 import com.yuruan.neuqassist.data.Logger
+import com.yuruan.neuqassist.data.Personalize
 import com.yuruan.neuqassist.data.ProcessedClassroomData
 import com.yuruan.neuqassist.data.QueryResult
 import com.yuruan.neuqassist.data.ScheduleService
@@ -103,6 +105,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ===== 小秦帮页状态（对应 XiaoQinView.ets） =====
     var sessionModeLabel by mutableStateOf("")
 
+    // ===== 个性化中心状态（对应 hap common/Personalize.ets 的 AppStorage 联动） =====
+    // 读取侧已在 SettingsStore 内做合法值校验（损坏值回退默认），这里直接持有 Compose 状态
+    /** 主题预设键（'blue' | 'orange' | 'green' | 'purple'） */
+    var themePreset by mutableStateOf(settings.themePreset)
+        private set
+    /** 课表文字大小档位（'small' | 'standard' | 'large'） */
+    var scheduleFontScale by mutableStateOf(settings.scheduleFontScale)
+        private set
+    /** 课表卡片圆角（dp，2-16） */
+    var scheduleCardRadius by mutableStateOf(settings.scheduleCardRadius)
+        private set
+    /** 冷启动默认栏目（仅影响下次冷启动，切换栏目不回写） */
+    var defaultLaunchTab by mutableStateOf(settings.defaultLaunchTab)
+        private set
+    /** 是否启用背景（默认启用内置背景图） */
+    var bgEnabled by mutableStateOf(settings.bgEnabled)
+        private set
+    /** 自定义背景沙箱路径（空 = 内置默认背景） */
+    var bgImagePath by mutableStateOf(settings.bgImagePath)
+        private set
+    /** 背景强度（内容保护层不透明度，0.6-1）：越大文字越清晰、背景越淡 */
+    var bgDim by mutableStateOf(settings.bgDim)
+        private set
+    /** 课表网格线是否加重（'solid'=加重，背景较花时更清晰） */
+    var lineWeightSolid by mutableStateOf(settings.lineWeight == "solid")
+        private set
+
+    /** 当前主题强调色（由预设派生，不落盘；对应 hap AppStorage 的 themePrimary） */
+    val themePrimary: Color
+        get() = Color(Personalize.themeColor(themePreset))
+
     // ===== 底部导航 =====
     var currentTab by mutableStateOf(0)
 
@@ -110,6 +143,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var pendingWebSession by mutableStateOf<Pair<String, String>?>(null)
 
     init {
+        // 自定义背景文件失效自愈（对应 hap 的文件失效场景）：路径还在但沙箱文件
+        // 已不存在（如被系统清理）时清掉引用，避免残留死路径；UI 层另有兜底渲染
+        if (bgImagePath.isNotEmpty() && !java.io.File(bgImagePath).exists()) {
+            bgImagePath = ""
+            settings.bgImagePath = ""
+        }
         viewModelScope.launch {
             privacyAgreed = settings.isPrivacyAgreed()
             if (privacyAgreed) {
@@ -741,6 +780,97 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 importBusy = false
             }
         }
+    }
+
+    // ===== 个性化设置更新（校验 + 状态实时生效 + 落盘） =====
+
+    /** 切换主题预设（Personalize 内部完成校验；强调色由 themePrimary 派生实时联动） */
+    fun updateThemePreset(key: String) {
+        val k = Personalize.normalizeThemeKey(key)
+        themePreset = k
+        settings.themePreset = k
+    }
+
+    /** 切换课表字号档位 */
+    fun updateScheduleFontScale(key: String) {
+        val k = Personalize.normalizeFontScale(key)
+        scheduleFontScale = k
+        settings.scheduleFontScale = k
+    }
+
+    /** 设置课表卡片圆角：拖动过程仅更新状态（persist=false），松手才写盘 */
+    fun updateScheduleCardRadius(v: Int, persist: Boolean = true) {
+        scheduleCardRadius = Personalize.normalizeCardRadius(v)
+        if (persist) settings.scheduleCardRadius = scheduleCardRadius
+    }
+
+    fun persistScheduleCardRadius() {
+        settings.scheduleCardRadius = scheduleCardRadius
+    }
+
+    /** 切换冷启动默认栏目（仅影响下次冷启动，不做页面跳转） */
+    fun updateDefaultLaunchTab(v: Int) {
+        defaultLaunchTab = Personalize.normalizeLaunchTab(v)
+        settings.defaultLaunchTab = defaultLaunchTab
+    }
+
+    /** 背景开关 */
+    fun updateBgEnabled(v: Boolean) {
+        bgEnabled = v
+        settings.bgEnabled = v
+    }
+
+    /** 背景强度：拖动过程仅更新状态（persist=false），松手才写盘 */
+    fun updateBgDim(v: Float, persist: Boolean = true) {
+        bgDim = Personalize.normalizeBgDim(v)
+        if (persist) settings.bgDim = bgDim
+    }
+
+    fun persistBgDim() {
+        settings.bgDim = bgDim
+    }
+
+    /** 课表网格线加重开关 */
+    fun updateLineWeightSolid(solid: Boolean) {
+        lineWeightSolid = solid
+        settings.lineWeight = if (solid) "solid" else "normal"
+    }
+
+    /** 应用自定义背景：先复制到应用沙箱再持久化引用（系统选择器授权是临时的） */
+    fun applyCustomBackground(path: String) {
+        bgImagePath = path
+        bgEnabled = true
+        settings.bgImagePath = path
+        settings.bgEnabled = true
+    }
+
+    /** 恢复内置默认背景（清理已复制的自定义文件） */
+    fun resetBackground() {
+        try {
+            java.io.File(context.filesDir, Personalize.BG_CUSTOM_FILE).delete()
+        } catch (e: Exception) {
+            Logger.warn("清理自定义背景失败: ${e.message}")
+        }
+        bgImagePath = ""
+        bgEnabled = true
+        settings.bgImagePath = ""
+        settings.bgEnabled = true
+    }
+
+    /**
+     * 恢复默认个性化设置：仅重置外观 / 偏好项并清理自定义背景文件。
+     * ⚠️ 不触碰账号密码、登录会话、课程数据、节次时间、学期起点、缓存与隐私同意状态。
+     */
+    fun resetPersonalization() {
+        Personalize.resetPersonalization(context, settings)
+        themePreset = Personalize.DEFAULT_THEME_KEY
+        scheduleFontScale = Personalize.DEFAULT_FONT_SCALE
+        scheduleCardRadius = Personalize.DEFAULT_CARD_RADIUS
+        defaultLaunchTab = Personalize.DEFAULT_LAUNCH_TAB
+        bgEnabled = true
+        bgImagePath = ""
+        bgDim = Personalize.DEFAULT_BG_DIM
+        lineWeightSolid = Personalize.DEFAULT_LINE_WEIGHT == "solid"
     }
 
     // ===== 通用 =====

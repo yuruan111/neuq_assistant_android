@@ -43,6 +43,16 @@ object Keys {
     const val KEY_LINE_WEIGHT = "lineWeight"
     const val KEY_DOCK_OPACITY = "dockBarOpacity"
 
+    // —— 个性化设置（与 hap common/AppKeys.ets 新增键一致；校验与回退统一在 Personalize） ——
+    /** 主题预设：'blue' | 'orange' | 'green' | 'purple' */
+    const val KEY_THEME_PRESET = "themePreset"
+    /** 课表文字大小：'small' | 'standard' | 'large' */
+    const val KEY_SCHEDULE_FONT_SCALE = "scheduleFontScale"
+    /** 课表卡片圆角（dp，2-16） */
+    const val KEY_SCHEDULE_CARD_RADIUS = "scheduleCardRadius"
+    /** 冷启动默认栏目：0=课表查询 1=空教室 2=小秦帮 */
+    const val KEY_DEFAULT_LAUNCH_TAB = "defaultLaunchTab"
+
     /** 密码的加密存储别名（EncryptedSharedPreferences 键） */
     const val ALIAS_JWXT_PASSWORD = "jwxt_password"
     const val ALIAS_WEBVPN_PASSWORD = "webvpn_password"

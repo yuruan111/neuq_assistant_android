@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
@@ -38,7 +39,6 @@ import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.ui.AppTextField
 import com.yuruan.neuqassist.ui.HelpText
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import com.yuruan.neuqassist.ui.theme.TextTertiary
@@ -334,7 +334,7 @@ private fun TimeWheelDialog(
                     text = "${WHEEL_HOURS[hourIdx]}:${WHEEL_MINUTES[minIdx]}",
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
-                    color = PrimaryBlue,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(vertical = 10.dp)
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -351,7 +351,7 @@ private fun TimeWheelDialog(
                                     text = h,
                                     fontSize = if (selected) 18.sp else 14.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selected) PrimaryBlue else TextSecondary,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable { hourIdx = i }
@@ -373,7 +373,7 @@ private fun TimeWheelDialog(
                                     text = m,
                                     fontSize = if (selected) 18.sp else 14.sp,
                                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (selected) PrimaryBlue else TextSecondary,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else TextSecondary,
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable { minIdx = i }
@@ -435,7 +435,7 @@ fun ImportScheduleDialog(
                     Surface(
                         onClick = onStartWebImport,
                         modifier = Modifier.fillMaxWidth().height(40.dp),
-                        color = PrimaryBlue,
+                        color = MaterialTheme.colorScheme.primary,
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
                     ) {
                         Column(
@@ -465,7 +465,7 @@ fun ImportScheduleDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(t.name, fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
-                                Text("导入", fontSize = 13.sp, color = PrimaryBlue)
+                                Text("导入", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }

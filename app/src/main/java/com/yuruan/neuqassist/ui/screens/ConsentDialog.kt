@@ -32,7 +32,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 
@@ -155,7 +154,7 @@ fun ConsentDialog(
                         modifier = Modifier.weight(1f).height(40.dp),
                         shape = RoundedCornerShape(20.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = PrimaryBlue,
+                            containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = Color.White
                         )
                     ) {

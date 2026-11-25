@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,7 +51,6 @@ import com.yuruan.neuqassist.ui.theme.CardBg
 import com.yuruan.neuqassist.ui.theme.WarnBg
 import com.yuruan.neuqassist.ui.theme.WarnOrange
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceGrey
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
@@ -87,16 +87,15 @@ fun EmptyClassroomScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 根布局透明：全局背景（自定义/内置图 + 保护层）由 MainActivity 统一渲染后透出
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFFF2F3F5))
     ) {
         // 标题栏
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFF2F3F5))
                 .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -206,7 +205,7 @@ fun EmptyClassroomScreen(
                         Text(
                             text = "取消等待",
                             fontSize = 13.sp,
-                            color = PrimaryBlue,
+                            color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
                                 .clickable { onCancelCooldown() }
                                 .padding(horizontal = 8.dp, vertical = 4.dp)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -27,7 +28,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.ui.theme.CardBg
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import com.yuruan.neuqassist.ui.theme.TextSecondary
@@ -79,7 +79,7 @@ fun PrimaryButton(
         modifier = modifier.fillMaxWidth().height(44.dp),
         shape = RoundedCornerShape(22.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = PrimaryBlue,
+            containerColor = MaterialTheme.colorScheme.primary,
             disabledContainerColor = SurfaceLight
         )
     ) {
@@ -135,7 +135,7 @@ fun LoadingRow(text: String, modifier: Modifier = Modifier) {
     ) {
         CircularProgressIndicator(
             modifier = Modifier.width(20.dp).height(20.dp),
-            color = PrimaryBlue,
+            color = MaterialTheme.colorScheme.primary,
             strokeWidth = 2.dp
         )
         Spacer(modifier = Modifier.width(8.dp))
@@ -226,7 +226,7 @@ fun Chip(
     Surface(
         onClick = onClick,
         modifier = modifier,
-        color = if (selected) PrimaryBlue else Color.White,
+        color = if (selected) MaterialTheme.colorScheme.primary else Color.White,
         shape = RoundedCornerShape(Dimens.chipRadius),
         border = if (selected) null else androidx.compose.foundation.BorderStroke(
             1.dp, Color(0x33182431)

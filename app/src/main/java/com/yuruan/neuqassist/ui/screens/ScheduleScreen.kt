@@ -19,6 +19,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,7 +37,6 @@ import com.yuruan.neuqassist.data.filterCoursesByWeek
 import com.yuruan.neuqassist.data.ScheduleViewUtil
 import com.yuruan.neuqassist.ui.theme.CoursePalette
 import com.yuruan.neuqassist.ui.theme.Dimens
-import com.yuruan.neuqassist.ui.theme.PrimaryBlue
 import com.yuruan.neuqassist.ui.theme.SurfaceGrey
 import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
@@ -64,8 +64,12 @@ fun ScheduleScreen(
     todayIndex: Int,
     restFlags: List<Boolean>,
     workFlags: List<Boolean>,
-    /** 课表网格线是否加重（由「小秦帮 → 外观设置」控制，持久化） */
+    /** 课表网格线是否加重（由「小秦帮 → 个性化设置」控制，持久化） */
     lineWeightSolid: Boolean,
+    /** 课表文字大小档位键（个性化设置实时联动） */
+    fontScaleKey: String,
+    /** 课表卡片圆角（dp，2-16，个性化设置实时联动） */
+    cardRadiusDp: Int,
     /** 切周触感反馈开关由调用方注入；此处仅回调 */
     onSwitchWeek: (Int) -> Unit,
     onOpenAdjust: () -> Unit,
@@ -73,10 +77,11 @@ fun ScheduleScreen(
     onQuickJumpEmpty: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 根布局透明：全局背景（自定义/内置图 + 保护层）由 MainActivity 统一渲染后透出，
+    // 对应 hap ScheduleView 的半透明保护层沉浸形态
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFFE9EBF8))
     ) {
         // ===== WakeUp 风格头部：大日期 + 周次切换 + 右上角调整入口 =====
         Row(
@@ -121,6 +126,8 @@ fun ScheduleScreen(
                     restFlags = restFlags,
                     workFlags = workFlags,
                     lineWeightSolid = lineWeightSolid,
+                    fontScaleKey = fontScaleKey,
+                    cardRadiusDp = cardRadiusDp,
                     onCourseClick = onCourseClick,
                     availableHeight = 480.dp
                 )
@@ -144,7 +151,7 @@ fun ScheduleScreen(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(16.dp),
-                    color = PrimaryBlue,
+                    color = MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(20.dp)
                 ) {
                     Text(
@@ -231,7 +238,7 @@ fun CoursePreviewSheet(
         Surface(
             onClick = onEdit,
             modifier = Modifier.fillMaxWidth().height(42.dp),
-            color = PrimaryBlue,
+            color = MaterialTheme.colorScheme.primary,
             shape = RoundedCornerShape(21.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -399,7 +406,7 @@ fun CoursesManagerScreen(
                     .fillMaxWidth()
                     .padding(12.dp)
                     .height(44.dp),
-                color = PrimaryBlue,
+                color = MaterialTheme.colorScheme.primary,
                 shape = RoundedCornerShape(22.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -429,7 +436,7 @@ fun CoursesManagerScreen(
                             modifier = Modifier
                                 .size(36.dp)
                                 .background(
-                                    if (formDay == d + 1) PrimaryBlue else SurfaceLight,
+                                    if (formDay == d + 1) MaterialTheme.colorScheme.primary else SurfaceLight,
                                     CircleShape
                                 )
                                 .clickable { onFormDay(d + 1) },
@@ -482,7 +489,7 @@ fun CoursesManagerScreen(
                             modifier = Modifier
                                 .size(28.dp)
                                 .background(
-                                    if (w in formWeeks) PrimaryBlue else SurfaceLight,
+                                    if (w in formWeeks) MaterialTheme.colorScheme.primary else SurfaceLight,
                                     CircleShape
                                 )
                                 .clickable { onToggleWeek(w) },
@@ -522,7 +529,7 @@ fun CoursesManagerScreen(
                     .fillMaxWidth()
                     .padding(12.dp)
                     .height(44.dp),
-                color = PrimaryBlue,
+                color = MaterialTheme.colorScheme.primary,
                 shape = RoundedCornerShape(22.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -542,7 +549,7 @@ private fun FormLabel(text: String) {
 private fun SectionChip(text: String, selected: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
-        color = if (selected) PrimaryBlue else SurfaceLight,
+        color = if (selected) MaterialTheme.colorScheme.primary else SurfaceLight,
         shape = RoundedCornerShape(14.dp)
     ) {
         Text(
