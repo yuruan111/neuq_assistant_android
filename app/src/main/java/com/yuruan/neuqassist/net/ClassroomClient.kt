@@ -64,13 +64,19 @@ class ClassroomClient(private val config: ClassroomQueryConfig) {
         // CasAuth.loginEams 内部会先探测教务是否真的启用了 CAS，
         // 未启用时自动回退旧的 salt+SHA1 流程（兼容教务回退登录方式的情况）。
         val casLoginUrl = webvpn.proxiedAsync(CasAuth.EAMS_CAS_LOGIN_URL)
+        val legacyBase = if (config.webvpnEnabled) {
+            webvpn.proxiedAsync(config.baseUrl)
+        } else {
+            ""
+        }
         CasAuth.loginEamsVia(
             casLoginUrl = casLoginUrl,
             client = client,
             eamsBaseUrl = config.baseUrl,
             eamsHomePath = "homeExt.action",
             username = username,
-            password = password
+            password = password,
+            legacyUrlBase = legacyBase
         )
         Logger.info("教务登录成功（含 WebVPN 前缀=${config.webvpnEnabled}）")
     }

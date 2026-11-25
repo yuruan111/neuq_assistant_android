@@ -16,6 +16,7 @@ import com.yuruan.neuqassist.data.CloudCache
 import com.yuruan.neuqassist.data.CloudCacheData
 import com.yuruan.neuqassist.data.CloudService
 import com.yuruan.neuqassist.data.CourseItem
+import com.yuruan.neuqassist.data.CourseFileImport
 import com.yuruan.neuqassist.data.CourseFileParser
 import com.yuruan.neuqassist.data.DateUtil
 import com.yuruan.neuqassist.data.Keys
@@ -80,10 +81,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var service: ClassroomService? = null
     private var webChannelFailed = false
+    private var querySeq = 0
 
     // ===== 课表页状态（对应 ScheduleView.ets） =====
-    var currentWeek by mutableStateOf(1)
     var termStartDate by mutableStateOf(parseTermStart(settings.termStartDate))
+    var realWeek by mutableStateOf(ScheduleViewUtil.computeRealWeek(termStartDate))
+        private set
+    var currentWeek by mutableStateOf(realWeek)
     var timeSlots by mutableStateOf(settings.loadTimeSlots())
     var scheduleCourses by mutableStateOf(settings.loadCourses())
     var restFlags by mutableStateOf(List(7) { false })
@@ -94,6 +98,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var terms by mutableStateOf<List<TermInfo>>(emptyList())
 
     private val holidayService = HolidayService()
+    private var holidaySeq = 0
 
     /** 触感反馈（切周 / 时间滚轮），设备不支持时静默降级 */
     private val haptics: HapticService? = try {
@@ -124,6 +129,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** 自定义背景沙箱路径（空 = 内置默认背景） */
     var bgImagePath by mutableStateOf(settings.bgImagePath)
+        private set
+    /** 自定义背景版本号（覆写同一文件 bg_custom.jpg 时递增以触发解码刷新） */
+    var bgVersion by mutableStateOf(0L)
         private set
     /** 背景强度（内容保护层不透明度，0.6-1）：越大文字越清晰、背景越淡 */
     var bgDim by mutableStateOf(settings.bgDim)
@@ -171,22 +179,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun loadInitialData() {
-        // 打开即显：有本地缓存时直接展示，不联网
+        val seq = querySeq
+        val useCloud = cloudSource
+        // 打开即显：云端模式读 cloud_cache.txt，实时模式读 local_cache.txt，互不混用
         try {
-            val cached = CloudCache.load(context)
-            if (cached != null) {
+            val cached = if (useCloud) CloudCache.load(context) else CloudCache.loadLocal(context)
+            if (cached != null && querySeq == seq && !loading && cloudSource == useCloud) {
                 val slotKey = currentSlotKey()
+                val stale = !CloudCache.isFresh(cached)
                 val hit = CloudService.resultFromCache(
-                    cached, dayOffset, slotKey, cacheDayShift(cached)
+                    cached, dayOffset, slotKey, cacheDayShift(cached), stale
                 )
-                if (hit != null) {
+                if (hit != null && querySeq == seq && !loading && cloudSource == useCloud) {
                     result = hit
-                    cacheInfoText = "本地缓存 · 更新于 ${cached.updateTime}"
+                    cacheInfoText = "${if (useCloud) "云端缓存" else "本地缓存"} · 更新于 ${cached.updateTime}"
                 }
             }
         } catch (e: Exception) {
             com.yuruan.neuqassist.data.Logger.warn("缓存展示失败: ${e.message}")
         }
+        realWeek = ScheduleViewUtil.computeRealWeek(termStartDate)
+        currentWeek = realWeek
         refreshWeekMeta()
         sessionModeLabel = when (sessionMode) {
             "" -> "未登录"
@@ -212,6 +225,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSlot(index: Int) {
         slotIndex = index
+        if (cloudSource && !loading) doQuery()
     }
 
     // 说明：以下 updateXxx 命名刻意避开 `var xxx by mutableStateOf(...)` 生成的合成
@@ -268,18 +282,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 本地缓存命中则直接展示（1 小时内有效，零联网）：返回是否命中 */
+    /** 云端缓存命中则直接展示（1 小时内有效，零联网；仅限云端数据模式）：返回是否命中 */
     private suspend fun tryServeFromCache(): Boolean {
+        if (!cloudSource) return false
         return try {
             val cached = CloudCache.load(context) ?: return false
-            if (cached.fetchedAt <= 0) return false
-            if ((System.currentTimeMillis() - cached.fetchedAt) > 12 * 3600000L) return false
+            if (!CloudCache.isFresh(cached)) return false
             val hit = CloudService.resultFromCache(
-                cached, dayOffset, currentSlotKey(), cacheDayShift(cached)
+                cached,
+                dayOffset,
+                currentSlotKey(),
+                dayShift = cacheDayShift(cached),
+                stale = false
             ) ?: return false
             result = hit
             cacheInfoText = "本地缓存 · 更新于 ${cached.updateTime}"
-            sourceText = "数据来源：本地保存的数据（本次未联网）"
+            sourceText = "数据来源：云端缓存（每小时更新，本次未联网）"
             true
         } catch (e: Exception) {
             com.yuruan.neuqassist.data.Logger.warn("缓存命中判定失败: ${e.message}")
@@ -289,38 +307,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun doQuery() {
         if (loading) return
+        val seq = ++querySeq
         loading = true
         errorMsg = ""
+        cacheInfoText = ""
         warningText = ""
         sourceText = ""
         result = null
 
         viewModelScope.launch {
             try {
-                // 本地缓存优先：一键更新落盘的数据 1 小时内直接展示，零联网
-                if (tryServeFromCache()) {
-                    loading = false
-                    progressText = ""
-                    return@launch
-                }
-
                 // 数据来源一：云端（neuq.tsiao.io，免登录，每小时更新，带本地缓存）
                 if (cloudSource) {
+                    // 仅云端数据模式下优先读取 1 小时内新鲜缓存（零联网）；实时查询绝不走缓存
+                    if (tryServeFromCache()) {
+                        loading = false
+                        progressText = ""
+                        return@launch
+                    }
                     try {
                         val vpnCookies = if (sessionMode == "webvpn") sessionCookies else ""
-                        result = CloudService.fetchDay(
+                        val fetched = CloudService.fetchDay(
                             context, dayOffset, currentSlotKey(),
                             serverUrl, vpnCookies,
                             { url -> fetchViaWeb(url) },
-                            { msg -> progressText = msg }
+                            { msg -> if (querySeq == seq) progressText = msg }
                         )
-                        sourceText = if (serverUrl.isNotEmpty()) {
-                            "数据来源：云端数据（自建服务器）"
-                        } else {
-                            "数据来源：云端数据（公共镜像，免登录·每小时更新）"
+                        if (querySeq == seq) {
+                            result = fetched
+                            sourceText = if (serverUrl.isNotEmpty()) {
+                                "数据来源：云端数据（自建服务器）"
+                            } else {
+                                "数据来源：云端数据（公共镜像，免登录·每小时更新）"
+                            }
                         }
                     } catch (e: Exception) {
-                        errorMsg = "${e.message}（云端来源，可切\"实时查询\"获取更精确数据）"
+                        if (querySeq == seq) {
+                            errorMsg = "${e.message}（云端来源，可切\"实时查询\"获取更精确数据）"
+                        }
                     } finally {
                         loading = false
                         progressText = ""
@@ -447,7 +471,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "window.__ncr = x.responseText;" +
             "return x.status + '|' + String(x.responseText.length);" +
             "})()"
-        val meta = WebFetchHelper.runJs(js)
+        val meta = WebFetchHelper.runJs(js).trim().trim('"')
         val parts = meta.split("|")
         val status = parts.getOrNull(0)?.toIntOrNull()
         val total = parts.getOrNull(1)?.toIntOrNull() ?: 0
@@ -467,6 +491,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun updateRecentAll() {
         if (loading) return
+        val seq = ++querySeq
         loading = true
         bulkBusy = true
         errorMsg = ""
@@ -542,12 +567,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 warningText = warn
 
                 val stamp = DateUtil.stampNow()
-                CloudCache.save(context, stamp, rooms, roomDays)
-                CloudService.clearResultCache()
-                cacheInfoText = "本地缓存 · 更新于 $stamp"
-                sourceText = "数据来源：教务实时查询（网页通道）· 已保存到本地"
-
-                // 立即展示当前所选（用内存中的新数据，免再读盘）
+                // 一键更新写入独立的本地离线缓存（local_cache.txt），绝不污染云端 cloud_cache.txt
                 val data = CloudCacheData().apply {
                     updateTime = stamp
                     fetchedAt = System.currentTimeMillis()
@@ -555,8 +575,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     this.roomDays = roomDays.toMutableList()
                     buildIndex()
                 }
-                CloudService.resultFromCache(data, dayOffset, currentSlotKey())?.let {
-                    result = it
+                CloudCache.saveLocal(context, data)
+                CloudService.clearResultCache()
+                if (querySeq == seq) {
+                    cacheInfoText = "本地缓存 · 更新于 $stamp"
+                    sourceText = "数据来源：教务实时查询（网页通道）· 已保存到本地"
+
+                    // 立即展示当前所选（用内存中的新数据，免再读盘）
+                    CloudService.resultFromCache(
+                        data, dayOffset, currentSlotKey(), dayShift = 0, stale = false
+                    )?.let {
+                        result = it
+                    }
                 }
             } catch (e: Exception) {
                 errorMsg = "${e.message}（一键更新）"
@@ -572,16 +602,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ===== 网页登录会话 =====
 
     /**
-     * 网页登录成功后调用：从 WebView CookieManager 取 Cookie 灌入原生请求。
+     * 网页登录成功后调用：优先使用页面提取并传递来的 Cookie，缺失时兜底从 CookieManager 读取。
      * mode: "eams" 或 "webvpn"
      */
-    fun onWebLoginSuccess(mode: String) {
-        val cookieUrl = if (mode == "webvpn") {
-            "https://vpn.neuq.edu.cn/"
+    fun onWebLoginSuccess(mode: String, extractedCookies: String = "") {
+        val cookies = if (extractedCookies.isNotEmpty()) {
+            extractedCookies
         } else {
-            "http://jwxt.neuq.edu.cn/"
+            val cm = CookieManager.getInstance()
+            cm.flush()
+            val primaryUrl = if (mode == "webvpn") {
+                "https://vpn.neuq.edu.cn/"
+            } else {
+                "http://jwxt.neuq.edu.cn/eams/homeExt.action"
+            }
+            var c = cm.getCookie(primaryUrl) ?: ""
+            if (c.isEmpty() && mode != "webvpn") {
+                c = cm.getCookie("http://jwxt.neuq.edu.cn/") ?: ""
+            }
+            c
         }
-        val cookies = CookieManager.getInstance().getCookie(cookieUrl) ?: ""
         if (cookies.isEmpty()) return
         sessionCookies = cookies
         sessionMode = mode
@@ -622,18 +662,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             set(2026, 7, 31) // 2026-08-31 周一
         }.time
 
-    var realWeek: Int = 1
-        private set
-
     fun refreshWeekMeta() {
         realWeek = ScheduleViewUtil.computeRealWeek(termStartDate)
         if (currentWeek !in 1..20) currentWeek = realWeek
+        val seq = ++holidaySeq
+        val dates = ScheduleViewUtil.weekDates(termStartDate, currentWeek)
+        // 先用已有缓存同步刷新当前周，避免网络等待期间残留上一周的休/班徽标
+        val cachedFlags = holidayService.getFlags(dates)
+        restFlags = cachedFlags.restFlags
+        workFlags = cachedFlags.workFlags
+
         viewModelScope.launch {
-            val dates = ScheduleViewUtil.weekDates(termStartDate, currentWeek)
             val years = dates.map {
                 java.util.Calendar.getInstance().apply { time = it }.get(java.util.Calendar.YEAR)
             }.distinct()
             for (y in years) holidayService.getYearMap(y)
+            if (seq != holidaySeq) return@launch
             val flags = holidayService.getFlags(dates)
             restFlags = flags.restFlags
             workFlags = flags.workFlags
@@ -644,6 +688,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val next = currentWeek + delta
         if (next < 1 || next > 20) return
         currentWeek = next
+        refreshWeekMeta()
+    }
+
+    fun jumpToRealWeek() {
+        realWeek = ScheduleViewUtil.computeRealWeek(termStartDate)
+        if (currentWeek == realWeek) return
+        currentWeek = realWeek
         refreshWeekMeta()
     }
 
@@ -699,23 +750,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         saveCourses(scheduleCourses.filter { it.id != id })
     }
 
+    /** 解析教务「导出」文件，识别不到主网格返回 null */
+    fun parseCourseFile(content: String): CourseFileImport? =
+        try {
+            CourseFileParser.parse(content)
+        } catch (e: Exception) {
+            Logger.warn("课表文件解析失败: ${e.message}")
+            null
+        }
+
+    /** 应用已解析的导出课表（支持空课表确认后清空） */
+    fun applyParsedCourseFile(parsed: CourseFileImport, onDone: (Boolean, String) -> Unit) {
+        val courses = parsed.courses.toMutableList()
+        ScheduleViewUtil.dedupeCourseIds(courses)
+        saveCourses(courses)
+        val sem = if (parsed.semesterName.isEmpty()) "" else "（${parsed.semesterName}）"
+        val msg = if (courses.isEmpty()) {
+            "已导入空课表$sem"
+        } else {
+            "导入成功：${courses.size} 门课程$sem"
+        }
+        onDone(true, msg)
+    }
+
     /**
      * 从教务「导出」文件导入课表（免登录通道）
      * content: 文件文本内容
      */
-    fun importFromFile(content: String, onDone: (Boolean, String) -> Unit) {
+    fun importFromFile(content: String, allowEmpty: Boolean = false, onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch {
             try {
                 val parsed = CourseFileParser.parse(content)
-                if (parsed == null || parsed.courses.isEmpty()) {
+                if (parsed == null || (!allowEmpty && parsed.courses.isEmpty())) {
                     onDone(false, "未能从文件中识别到课表，请确认选择的是教务「导出」的学生课表文件")
                     return@launch
                 }
-                val courses = parsed.courses.toMutableList()
-                ScheduleViewUtil.dedupeCourseIds(courses)
-                saveCourses(courses)
-                val sem = if (parsed.semesterName.isEmpty()) "" else "（${parsed.semesterName}）"
-                onDone(true, "导入成功：${courses.size} 门课程$sem")
+                applyParsedCourseFile(parsed, onDone)
             } catch (e: Exception) {
                 onDone(false, "文件导入失败: ${e.message}")
             }
@@ -840,6 +910,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun applyCustomBackground(path: String) {
         bgImagePath = path
         bgEnabled = true
+        bgVersion = System.currentTimeMillis()
         settings.bgImagePath = path
         settings.bgEnabled = true
     }
@@ -853,6 +924,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         bgImagePath = ""
         bgEnabled = true
+        bgVersion = System.currentTimeMillis()
         settings.bgImagePath = ""
         settings.bgEnabled = true
     }
@@ -869,6 +941,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         defaultLaunchTab = Personalize.DEFAULT_LAUNCH_TAB
         bgEnabled = true
         bgImagePath = ""
+        bgVersion = System.currentTimeMillis()
         bgDim = Personalize.DEFAULT_BG_DIM
         lineWeightSolid = Personalize.DEFAULT_LINE_WEIGHT == "solid"
     }
@@ -877,6 +950,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 缓存基准日偏移：跨天后直接用今天的 dayOffset 匹配会展示错日期的数据 */
     private fun cacheDayShift(cached: com.yuruan.neuqassist.data.CloudCacheData): Int {
+        if (cached.fetchedAt <= 0L) return 0
         val base = java.util.Calendar.getInstance().apply {
             timeInMillis = cached.fetchedAt
             set(java.util.Calendar.HOUR_OF_DAY, 0)

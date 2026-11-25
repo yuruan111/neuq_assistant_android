@@ -71,7 +71,7 @@ object WebFetchHelper {
                     wv,
                     "document.documentElement.outerHTML.substring($off, $end)"
                 )
-                full.append(unescapeJs(chunk))
+                full.append(chunk)
                 off = end
             }
             full.toString()
@@ -85,10 +85,12 @@ object WebFetchHelper {
     private suspend fun loadPage(wv: WebView, url: String): Boolean =
         suspendCancellableCoroutine { cont ->
             var done = false
+            lateinit var timeoutRunnable: Runnable
             val client = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     if (done) return
                     done = true
+                    mainHandler.removeCallbacks(timeoutRunnable)
                     if (cont.isActive) cont.resume(true)
                 }
                 override fun onReceivedError(
@@ -99,31 +101,39 @@ object WebFetchHelper {
                     if (done) return
                     if (request?.isForMainFrame == true) {
                         done = true
+                        mainHandler.removeCallbacks(timeoutRunnable)
                         if (cont.isActive) cont.resume(false)
                     }
                 }
             }
-            wv.webViewClient = client
-            mainHandler.post {
-                try {
-                    wv.loadUrl(url)
-                } catch (e: Exception) {
-                    if (!done) {
-                        done = true
-                        if (cont.isActive) cont.resume(false)
-                    }
-                }
-            }
-            // 30 秒超时保护
-            mainHandler.postDelayed({
+            timeoutRunnable = Runnable {
                 if (!done) {
                     done = true
                     if (cont.isActive) cont.resume(false)
                 }
-            }, 30000)
+            }
+            cont.invokeOnCancellation {
+                done = true
+                mainHandler.removeCallbacks(timeoutRunnable)
+            }
+            mainHandler.post {
+                if (!cont.isActive) return@post
+                try {
+                    wv.webViewClient = client
+                    wv.loadUrl(url)
+                    // 30 秒超时保护
+                    mainHandler.postDelayed(timeoutRunnable, 30000)
+                } catch (e: Exception) {
+                    if (!done) {
+                        done = true
+                        mainHandler.removeCallbacks(timeoutRunnable)
+                        if (cont.isActive) cont.resume(false)
+                    }
+                }
+            }
         }
 
-    /** 执行 JS 并取回字符串结果 */
+    /** 执行 JS 并取回解码后的字符串结果 */
     suspend fun runJs(script: String): String {
         val wv = webView ?: return ""
         return runJs(wv, script)
@@ -132,9 +142,10 @@ object WebFetchHelper {
     private suspend fun runJs(wv: WebView, script: String): String =
         suspendCancellableCoroutine { cont ->
             mainHandler.post {
+                if (!cont.isActive) return@post
                 try {
                     wv.evaluateJavascript(script) { value ->
-                        if (cont.isActive) cont.resume(value ?: "")
+                        if (cont.isActive) cont.resume(unescapeJs(value ?: ""))
                     }
                 } catch (e: Exception) {
                     if (cont.isActive) cont.resume("")
@@ -154,7 +165,7 @@ object WebFetchHelper {
         while (off < total) {
             val end = minOf(off + CHUNK, total)
             val chunk = runJs(wv, "$expr.substring($off, $end)")
-            full.append(unescapeJs(chunk))
+            full.append(chunk)
             off = end
         }
         return full.toString()
@@ -176,7 +187,12 @@ object WebFetchHelper {
                 i++
                 continue
             }
-            val next = if (i + 1 < inner.length) inner[i + 1] else ' '
+            if (i + 1 >= inner.length) {
+                out.append(ch)
+                i++
+                continue
+            }
+            val next = inner[i + 1]
             when {
                 next == 'u' && i + 5 < inner.length -> {
                     val code = inner.substring(i + 2, i + 6).toIntOrNull(16)

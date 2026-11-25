@@ -1,10 +1,13 @@
 package com.yuruan.neuqassist.data
 
 import com.yuruan.neuqassist.net.HttpService
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import org.json.JSONObject
-import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 法定节假日 / 调休日 联网查询服务 —— 移植自 HarmonyOS 端 service/HolidayService.ets
@@ -35,45 +38,90 @@ data class WeekHolidayFlags(
 class HolidayService(private val http: HttpService = HttpService()) {
 
     /** 扁平缓存：键 "yyyy-MM-dd" */
-    private val cache = HashMap<String, HolidayInfo>()
+    private val cache = ConcurrentHashMap<String, HolidayInfo>()
 
     /** 已成功加载的年份 */
-    private val loadedYears = HashSet<Int>()
+    private val loadedYears: MutableSet<Int> = ConcurrentHashMap.newKeySet()
 
-    private val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
+    /** 进行中的同年份请求（并发调用共享同一 Deferred，防止重复请求或读取半成品缓存） */
+    private val pending = HashMap<Int, CompletableDeferred<Unit>>()
+    private val pendingLock = Any()
 
-    /** 加载某年节假日数据（缓存优先；失败可重试） */
+    /** 加载某年节假日数据（缓存优先；同年份并发去重；失败可重试） */
     suspend fun getYearMap(year: Int) {
         if (year in loadedYears) return
-        loadedYears.add(year)
+        var isOwner = false
+        val deferred = synchronized(pendingLock) {
+            if (year in loadedYears) return
+            pending[year] ?: CompletableDeferred<Unit>().also {
+                pending[year] = it
+                isOwner = true
+            }
+        }
+        if (!isOwner) {
+            deferred.await()
+            return
+        }
+        try {
+            fetchYear(year)
+            deferred.complete(Unit)
+        } catch (t: Throwable) {
+            deferred.completeExceptionally(t)
+            if (t is CancellationException) throw t
+        } finally {
+            synchronized(pendingLock) {
+                if (pending[year] === deferred) {
+                    pending.remove(year)
+                }
+            }
+        }
+    }
+
+    /** 拉取并解析单年节假日数据，全部解析且校验 code == 0 成功后再写入 loadedYears */
+    private suspend fun fetchYear(year: Int) {
         try {
             val resp = http.get("https://timor.tech/api/holiday/year/$year")
-            if (resp.status != 200) {
-                loadedYears.remove(year)
+            if (resp.status != 200) return
+            val root = JSONObject(resp.body)
+            if (!root.has("code") || root.optInt("code", -1) != 0) {
+                Logger.warn("节假日接口返回异常码(年份 $year): ${root.opt("code")}")
                 return
             }
-            val root = JSONObject(resp.body)
-            val holidayRaw = root.optJSONObject("holiday") ?: JSONObject()
+            val holidayRaw = root.optJSONObject("holiday")
+            if (holidayRaw == null) {
+                Logger.warn("节假日数据格式异常(年份 $year)")
+                return
+            }
+            var count = 0
             for (k in holidayRaw.keys()) {
                 val item = holidayRaw.optJSONObject(k) ?: continue
-                cache["$year-$k"] = HolidayInfo(
-                    name = item.optString("name"),
-                    isRest = item.optBoolean("holiday", false)
-                )
+                val name = item.opt("name") as? String ?: continue
+                val isRest = item.opt("holiday") as? Boolean ?: continue
+                cache["$year-$k"] = HolidayInfo(name = name, isRest = isRest)
+                count++
             }
-            Logger.info("节假日数据加载成功: $year 年 ${holidayRaw.length()} 条")
+            loadedYears.add(year)
+            Logger.info("节假日数据加载成功: $year 年 $count 条")
         } catch (e: Exception) {
-            loadedYears.remove(year)
+            if (e is CancellationException) throw e
             Logger.warn("节假日数据获取失败(年份 $year): ${e.message}")
         }
     }
 
     /** 计算 7 天（或任意天）的休/班标注 */
     fun getFlags(dates: List<Date>): WeekHolidayFlags {
+        val cal = Calendar.getInstance()
         val rest = mutableListOf<Boolean>()
         val work = mutableListOf<Boolean>()
         for (d in dates) {
-            val key = dateFmt.format(d)
+            cal.time = d
+            val key = String.format(
+                Locale.US,
+                "%04d-%02d-%02d",
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.DAY_OF_MONTH)
+            )
             val info = cache[key]
             if (info == null) {
                 rest.add(false)

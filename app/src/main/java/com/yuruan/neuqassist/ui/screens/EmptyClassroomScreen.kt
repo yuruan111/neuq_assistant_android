@@ -85,6 +85,7 @@ fun EmptyClassroomScreen(
     onQuery: () -> Unit,
     onBulkUpdate: () -> Unit,
     onOpenSettings: () -> Unit,
+    onRoomClick: (ProcessedClassroomData) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // 根布局透明：全局背景（自定义/内置图 + 保护层）由 MainActivity 统一渲染后透出
@@ -259,7 +260,7 @@ fun EmptyClassroomScreen(
             // 结果
             Spacer(modifier = Modifier.height(Dimens.gapLarge))
             result?.let { r ->
-                ResultView(r)
+                ResultView(r, onRoomClick = onRoomClick)
             }
 
             HelpText(
@@ -273,7 +274,10 @@ fun EmptyClassroomScreen(
 
 /** 结果展示（对应原端 resultView + RoomGrid） */
 @Composable
-private fun ResultView(result: QueryResult) {
+private fun ResultView(
+    result: QueryResult,
+    onRoomClick: (ProcessedClassroomData) -> Unit
+) {
     Column(verticalArrangement = Arrangement.spacedBy(Dimens.gapLarge)) {
         Text(
             text = "${DateUtil.dateToCn(result.dateStr)} · ${result.slotLabel} · " +
@@ -291,14 +295,17 @@ private fun ResultView(result: QueryResult) {
         }
 
         result.groups.forEach { group ->
-            BuildingCard(group)
+            BuildingCard(group, onRoomClick = onRoomClick)
         }
     }
 }
 
 /** 单栋教学楼卡片 */
 @Composable
-private fun BuildingCard(group: BuildingGroup) {
+private fun BuildingCard(
+    group: BuildingGroup,
+    onRoomClick: (ProcessedClassroomData) -> Unit
+) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = CardBg,
@@ -347,11 +354,11 @@ private fun BuildingCard(group: BuildingGroup) {
                         color = TextSecondary,
                         modifier = Modifier.padding(bottom = 6.dp)
                     )
-                    RoomGrid(fg.rooms)
+                    RoomGrid(fg.rooms, onRoomClick = onRoomClick)
                     Spacer(modifier = Modifier.height(6.dp))
                 }
             } else {
-                RoomGrid(group.rooms)
+                RoomGrid(group.rooms, onRoomClick = onRoomClick)
             }
         }
     }
@@ -360,7 +367,10 @@ private fun BuildingCard(group: BuildingGroup) {
 /** 房间卡片网格（楼内某楼层或整楼平铺共用） */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun RoomGrid(rooms: List<ProcessedClassroomData>) {
+private fun RoomGrid(
+    rooms: List<ProcessedClassroomData>,
+    onRoomClick: (ProcessedClassroomData) -> Unit
+) {
     // Compose FlowRow 实现自适应换行网格
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier.fillMaxWidth(),
@@ -369,6 +379,7 @@ private fun RoomGrid(rooms: List<ProcessedClassroomData>) {
     ) {
         rooms.forEach { room ->
             Surface(
+                onClick = { onRoomClick(room) },
                 color = SurfaceLight,
                 shape = RoundedCornerShape(Dimens.smallRadius)
             ) {

@@ -28,10 +28,13 @@ data class ProcessedClassroomData(
     val timeSlot: String = ""
 )
 
+/** 合法的时段后缀白名单（含衍生聚合时段 am / pm / night） */
+private val VALID_SLOTS = setOf(
+    "1-2", "3-4", "5-6", "7-8", "1-8", "9-10", "11-12", "1-12", "am", "pm", "night"
+)
+
 /** 校验时段格式是否有效（与 Rust is_valid_time_slot 一致） */
-fun isValidTimeSlot(slot: String): Boolean =
-    slot == "1-2" || slot == "3-4" || slot == "5-6" || slot == "7-8" ||
-        slot == "1-8" || slot == "9-10" || slot == "11-12" || slot == "1-12"
+fun isValidTimeSlot(slot: String): Boolean = slot in VALID_SLOTS
 
 /** 校验原始数据（对应 Rust Validate for RawClassroomData 的容量检查） */
 fun validateRawData(item: RawClassroomData) {

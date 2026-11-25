@@ -3,6 +3,7 @@ package com.yuruan.neuqassist.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,9 +24,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -85,6 +94,7 @@ fun CourseGridView(
     /** 课表卡片圆角（dp，2-16；个性化设置 → 课表显示） */
     cardRadiusDp: Int,
     onCourseClick: (CourseItem) -> Unit,
+    onBlankDoubleTap: () -> Unit = {},
     modifier: Modifier = Modifier,
     availableHeight: Dp = 480.dp
 ) {
@@ -99,6 +109,8 @@ fun CourseGridView(
     val layouts = layoutCourseBlocks(courses)
     // 今日态强调色跟随主题预设（个性化设置 → 主题配色）
     val accent = MaterialTheme.colorScheme.primary
+    val slotHPx = with(LocalDensity.current) { slotH.toPx() }
+    val currentOnBlankDoubleTap by rememberUpdatedState(onBlankDoubleTap)
 
     Column(modifier = modifier.fillMaxWidth()) {
         // ===== 顶部星期表头 =====
@@ -193,6 +205,9 @@ fun CourseGridView(
 
             // 7 天列（今日列轻微着色，色调随主题预设）
             for (d in 0 until 7) {
+                val dayLayouts = layouts.filter { it.columnIndex == d }
+                val latestDayLayouts by rememberUpdatedState(dayLayouts)
+                var colWidthPx by remember { mutableIntStateOf(0) }
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -201,6 +216,25 @@ fun CourseGridView(
                             if (d == todayIndex) accent.copy(alpha = 0.05f) else Color.Transparent
                         )
                         .border(width = 1.dp, color = gridLine)
+                        .onSizeChanged { colWidthPx = it.width }
+                        .pointerInput(slotHPx) {
+                            detectTapGestures(
+                                onDoubleTap = { offset ->
+                                    val w = colWidthPx.toFloat()
+                                    val hitCourse = w > 0f && latestDayLayouts.any { layout ->
+                                        val left = w * (layout.subColumnIndex.toFloat() / layout.subColumnCount)
+                                        val right = left + w / layout.subColumnCount
+                                        val top = slotHPx * (layout.course.startSection - 1)
+                                        val bottom = top + slotHPx * layout.span
+                                        offset.x in (left - 4f)..(right + 4f) &&
+                                            offset.y in (top - 4f)..(bottom + 4f)
+                                    }
+                                    if (!hitCourse) {
+                                        currentOnBlankDoubleTap()
+                                    }
+                                }
+                            )
+                        }
                 ) {
                     // 横向网格线
                     Column(modifier = Modifier.fillMaxSize()) {
@@ -218,7 +252,6 @@ fun CourseGridView(
                     }
 
                     // 课程块（绝对定位由 Box + offset 模拟）
-                    val dayLayouts = layouts.filter { it.columnIndex == d }
                     for (layout in dayLayouts) {
                         val top = slotH * (layout.course.startSection - 1)
                         val height = slotH * layout.span

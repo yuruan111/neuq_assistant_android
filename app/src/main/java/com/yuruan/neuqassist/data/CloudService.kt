@@ -3,6 +3,8 @@ package com.yuruan.neuqassist.data
 import android.content.Context
 import com.yuruan.neuqassist.net.HttpService
 import com.yuruan.neuqassist.net.WebvpnCrypto
+import kotlinx.coroutines.CompletableDeferred
+import java.util.Calendar
 
 /**
  * 云端数据服务 —— 移植自 HarmonyOS 端 service/CloudService.ets
@@ -30,11 +32,22 @@ class CloudService(private val http: HttpService = HttpService()) {
 
         val MIRRORS = listOf(CLOUD_URL, CLOUD_URL_BACKUP)
 
-        /** 结果缓存：key = `${dayOffset}|${slotKey}`，避免重复分组/排序 */
+        /** 结果缓存：key 含日期/偏移/时段/来源/新鲜度/更新时间，避免重复分组/排序与跨态串用 */
         private val resultCache = HashMap<String, QueryResult>()
         /** 各缓存键的写入时间（每键独立 30 秒 TTL，避免互相"续命"） */
         private val resultCacheAt = HashMap<String, Long>()
+        private val resultCacheLock = Any()
         private const val RESULT_CACHE_TTL_MS = 30000L // 30 秒 TTL
+
+        /** 并发云端刷新去重池：避免同一通道并发请求重复拉取并竞态写盘 */
+        private val inFlightFetches = HashMap<String, CompletableDeferred<CloudFetchResult>>()
+        private val inFlightLock = Any()
+
+        /** 云端抓取并落盘的内部结果（含来源标识供结果构建与并发合并复用） */
+        private class CloudFetchResult(
+            val data: CloudCacheData,
+            val sourceTag: String
+        )
 
         /** 数据单元格命中记录（内部解析用） */
         private class CloudCellHit(
@@ -42,8 +55,28 @@ class CloudService(private val http: HttpService = HttpService()) {
             val slot: String,
             var start: Int,
             /** day-N- 标记在原文中的起始位置（切片时作为上一格的终点） */
-            val markerIdx: Int
+            var markerIdx: Int
         )
+
+        /** 计算缓存相对今天的基准日偏移（跨天后取数下标 = dayOffset + shift） */
+        fun cacheDayShift(cached: CloudCacheData): Int {
+            if (cached.fetchedAt <= 0) return 0
+            val base0 = Calendar.getInstance().apply {
+                timeInMillis = cached.fetchedAt
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            val today0 = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            val shift = Math.round((today0 - base0) / 86400000.0).toInt()
+            return if (shift < 0) 0 else shift
+        }
 
         /**
          * 获取指定日期的云端教室数据（缓存优先）
@@ -74,10 +107,11 @@ class CloudService(private val http: HttpService = HttpService()) {
                 throw AppError.config("云端数据仅覆盖今天起 7 天（day 0-6）")
             }
 
-            // ① 缓存优先
+            // ① 缓存优先（1 小时内新鲜直接复用，且跨天自动换算 shift）
             val cached = CloudCache.load(context)
             if (cached != null && cached.rooms.isNotEmpty() && CloudCache.isFresh(cached)) {
-                val cacheResult = resultFromCache(cached, dayOffset, slotKey)
+                val shift = cacheDayShift(cached)
+                val cacheResult = resultFromCache(cached, dayOffset, slotKey, shift, false)
                 if (cacheResult != null) {
                     onProgress?.invoke("使用本地缓存（每小时自动过期）...")
                     return cacheResult
@@ -85,157 +119,44 @@ class CloudService(private val http: HttpService = HttpService()) {
                 // 缓存数据异常（无法构建结果）时落到网络路径
             }
 
-            val self = CloudService()
-
-            // ② 自建服务器（境内可达性最好；文本格式与本地缓存一致，零解析成本）。
-            //    该网络环境下原生 http 可能被整体重置，因此原生与 WebView 双通道都尝试。
-            var serverErr = "未配置"
-            if (serverUrl.isNotEmpty()) {
-                var body = ""
-                var via = ""
-                if (webFetcher != null) {
-                    try {
-                        body = webFetcher(serverUrl)
-                        via = "WebView"
-                    } catch (e: Exception) {
-                        body = ""
-                    }
+            // ②③ 并发请求合并：相同通道参数正在刷新时复用同一 Deferred，防止竞态覆盖缓存
+            val fetchKey =
+                "$serverUrl|${if (webvpnCookies.isNotEmpty()) "vpn" else "direct"}|" +
+                    if (webFetcher != null) "web" else "http"
+            var isOwner = false
+            val deferred = synchronized(inFlightLock) {
+                inFlightFetches[fetchKey] ?: CompletableDeferred<CloudFetchResult>().also {
+                    inFlightFetches[fetchKey] = it
+                    isOwner = true
                 }
-                if (!body.startsWith("NEUQ_CACHE_V1")) {
-                    // WebView 渠道未取得有效文本时，再用原生 http 尝试
-                    try {
-                        val resp = self.http.get(serverUrl)
-                        if (resp.status < 400) {
-                            body = resp.body
-                            via = "原生"
-                        }
-                    } catch (e: Exception) {
-                        // 忽略，走最终诊断
-                    }
-                }
-                // WebView 以 text/plain 渲染时会把文本包进 <pre>，此处还原纯文本
-                val sIdx = body.indexOf("NEUQ_CACHE_V1")
-                if (sIdx > 0) {
-                    val eIdx = body.indexOf("</pre>", sIdx)
-                    body = if (eIdx >= 0) body.substring(sIdx, eIdx) else body.substring(sIdx)
-                }
-                if (body.startsWith("NEUQ_CACHE_V1")) {
-                    val data = CloudCache.fromText(body)
-                    if (data != null && data.rooms.isNotEmpty()) {
-                        // 同步刷新本地缓存文件
-                        CloudCache.save(context, data.updateTime, data.rooms, data.roomDays)
-                        clearResultCache() // 新数据落盘：丢弃 30 秒内的旧结果缓存
-                        val dayRooms = filterByDay(data.rooms, data.roomDays, dayOffset)
-                        return buildForDay(
-                            dayRooms, data.updateTime, dayOffset, slotKey,
-                            "自建服务器（$via）", false
-                        )
-                    }
-                    serverErr = "${via}通道响应 ${body.length} 字节但无有效数据"
-                } else {
-                    serverErr = "${via}通道无有效内容（响应 ${body.length} 字节）"
-                }
-                Logger.warn("自建服务器获取失败: $serverErr，回退公共镜像")
             }
 
-            // ③ 拉取整页并解析全部 7 天（多镜像依次尝试）
-            onProgress?.invoke("正在获取云端数据（每小时更新）...")
-            var html = ""
-            var lastErr = ""
-            for (mirror in MIRRORS) {
+            val fetched = if (isOwner) {
                 try {
-                    var body = ""
-                    if (webFetcher != null) {
-                        body = webFetcher(mirror)
-                    } else {
-                        val resp = self.http.get(mirror)
-                        body = if (resp.status < 400) resp.body else ""
-                    }
-                    if (body.isNotEmpty() && body.contains("day-0")) {
-                        html = body
-                        break
-                    }
-                    lastErr = "$mirror（获取 ${body.length} 字节，" +
-                        "含day-0:${body.contains("day-0")}）"
-                } catch (e: Exception) {
-                    lastErr = "$mirror: ${e.message}"
-                    Logger.warn("云端镜像不可达 $lastErr，尝试下一个")
-                }
-            }
-            // WebView 优先失败后，再用原生 http 对两个镜像兜底一次（不同网络栈表现可能不同）
-            if (html.isEmpty() && webFetcher != null) {
-                for (mirror in MIRRORS) {
-                    try {
-                        val resp = self.http.get(mirror)
-                        if (resp.status < 400 && resp.body.contains("day-0")) {
-                            html = resp.body
-                            break
+                    val res = CloudService().fetchAndSave(
+                        context, serverUrl, webvpnCookies, webFetcher, onProgress
+                    )
+                    deferred.complete(res)
+                    res
+                } catch (t: Throwable) {
+                    deferred.completeExceptionally(t)
+                    throw t
+                } finally {
+                    synchronized(inFlightLock) {
+                        if (inFlightFetches[fetchKey] === deferred) {
+                            inFlightFetches.remove(fetchKey)
                         }
-                        lastErr = "$mirror（原生，状态码 ${resp.status}）"
-                    } catch (e: Exception) {
-                        lastErr = "$mirror（原生）: ${e.message}"
                     }
                 }
-            }
-            // ③ 兜底：直连镜像均被重置且有 WebVPN 会话时，经网关代理获取
-            //    （校园网侧访问 Cloudflare 通常可达；需要有效的 WebVPN 会话 Cookie）
-            if (html.isEmpty() && webvpnCookies.isNotEmpty()) {
-                try {
-                    onProgress?.invoke("直连镜像不可达，尝试经 WebVPN 代理获取...")
-                    val proxied = WebvpnCrypto.buildResourceUrl(WEBVPN_BASE, CLOUD_URL)
-                    val vpnHttp = HttpService()
-                    vpnHttp.cookieStore.importFromHeader(webvpnCookies)
-                    val vpnResp = vpnHttp.get(proxied)
-                    if (vpnResp.status < 400 && vpnResp.body.contains("day-0")) {
-                        html = vpnResp.body
-                    }
-                } catch (e: Exception) {
-                    Logger.warn("WebVPN 代理获取云端失败: ${e.message}")
-                }
-            }
-            if (html.isEmpty()) {
-                val viaVpn = if (webvpnCookies.isNotEmpty()) "（含 WebVPN 代理路径）" else ""
-                throw AppError.fetch(
-                    "云端数据获取失败$viaVpn。服务器:$serverErr；" +
-                        "镜像:$lastErr。" +
-                        "建议：核对服务器接口地址与TOKEN；更换网络重试；或切实时查询来源。"
-                )
+            } else {
+                deferred.await()
             }
 
-            val updateTime = extractUpdateTime(html)
-            val rooms = mutableListOf<ProcessedClassroomData>()
-            val roomDays = mutableListOf<Int>()
-            var totalCells = 0
-            for (d in 0..6) {
-                val dayRooms = parseDayHtml(html, d)
-                Logger.info("[cloud] day-$d 解析 ${dayRooms.size} 格")
-                totalCells += dayRooms.size
-                for (r in dayRooms) {
-                    rooms.add(r)
-                    roomDays.add(d)
-                }
-            }
-            Logger.info(
-                "[cloud] 解析完成: $totalCells 格 / ${rooms.size} 间, " +
-                    "页面 ${html.length} 字节, 更新时间 $updateTime"
+            val dayRooms = filterByDayIndexed(fetched.data, dayOffset)
+            return buildForDay(
+                dayRooms, fetched.data.updateTime, dayOffset, slotKey,
+                fetched.sourceTag, false, "day=$dayOffset"
             )
-            if (totalCells == 0) {
-                val gIdx = html.indexOf("GXG1F1-2")
-                val snippet = if (gIdx >= 0) {
-                    html.substring(maxOf(0, gIdx - 60), minOf(html.length, gIdx + 40))
-                        .replace(Regex("\\s+"), " ")
-                } else "页面中未找到 GXG1F1-2"
-                throw AppError.fetch(
-                    "云端页面解析到 0 个数据格（页面 ${html.length} 字节）。" +
-                        "服务器分支:$serverErr。" +
-                        "GXG1F1-2 附近内容: $snippet。请完整截图反馈"
-                )
-            }
-            CloudCache.save(context, updateTime, rooms, roomDays)
-            clearResultCache() // 新数据落盘：丢弃 30 秒内的旧结果缓存
-
-            val dayRooms = filterByDay(rooms, roomDays, dayOffset)
-            return buildForDay(dayRooms, updateTime, dayOffset, slotKey, "云端", false)
         }
 
         /**
@@ -244,22 +165,26 @@ class CloudService(private val http: HttpService = HttpService()) {
          * @param dayOffset 展示日偏移（0=今天，同时用于结果里的日期标签）
          * @param dayShift  缓存基准日偏移：缓存生成日早于今天时为正，
          *                  实际取数下标 = dayOffset + dayShift
+         * @param stale     是否展示过期提示（首屏未检查新鲜度时传 true，1 小时内新鲜缓存传 false）
          * @returns null 表示缓存未覆盖该日（空桶/越界），调用方应视为未命中
          *          落到联网路径；注意不能用 totalRooms 判空——"该时段确实无空闲
          *          教室"的正常空结果 dayRooms 非空，不会被误判成 miss
          */
         fun resultFromCache(
-            cached: CloudCacheData,
+            data: CloudCacheData,
             dayOffset: Int,
             slotKey: String,
-            dayShift: Int = 0
+            dayShift: Int = 0,
+            stale: Boolean = false
         ): QueryResult? {
-            if (cached.rooms.isEmpty()) return null
+            if (data.rooms.isEmpty()) return null
+            val targetDay = dayOffset + dayShift
             // 使用预分组索引，避免遍历全量数据
-            val dayRooms = filterByDayIndexed(cached, dayOffset + dayShift)
+            val dayRooms = filterByDayIndexed(data, targetDay)
             if (dayRooms.isEmpty()) return null
             return buildForDay(
-                dayRooms, cached.updateTime, dayOffset, slotKey, "本地缓存", true
+                dayRooms, data.updateTime, dayOffset, slotKey, "本地缓存",
+                stale, "day=$targetDay|at=${data.fetchedAt}"
             )
         }
 
@@ -296,15 +221,20 @@ class CloudService(private val http: HttpService = HttpService()) {
             dayOffset: Int,
             slotKey: String,
             sourceTag: String,
-            stale: Boolean
+            stale: Boolean,
+            cacheVariant: String = ""
         ): QueryResult {
-            val cacheKey = "$dayOffset|$slotKey"
+            val dateStr = DateUtil.beijingDate(dayOffset)
+            val cacheKey =
+                "$dateStr|$dayOffset|$slotKey|$sourceTag|${if (stale) "1" else "0"}|$updateTime|$cacheVariant"
             // 30 秒内命中缓存直接返回（分组/排序只执行一次，按键独立计时）
-            val cachedAt = resultCacheAt[cacheKey]
-            if (resultCache.containsKey(cacheKey) && cachedAt != null &&
-                (System.currentTimeMillis() - cachedAt) < RESULT_CACHE_TTL_MS
-            ) {
-                return resultCache[cacheKey]!!
+            synchronized(resultCacheLock) {
+                val cachedAt = resultCacheAt[cacheKey]
+                if (resultCache.containsKey(cacheKey) && cachedAt != null &&
+                    (System.currentTimeMillis() - cachedAt) < RESULT_CACHE_TTL_MS
+                ) {
+                    return resultCache[cacheKey]!!
+                }
             }
 
             var selected: List<ProcessedClassroomData>
@@ -344,22 +274,26 @@ class CloudService(private val http: HttpService = HttpService()) {
 
             val staleTag = if (stale) "（数据可能已过期，点查询刷新）" else ""
             val result = QueryResult(
-                dateStr = DateUtil.beijingDate(dayOffset),
+                dateStr = dateStr,
                 slotLabel = "$label · $sourceTag" +
                     "${if (updateTime.isEmpty()) "" else "（更新于 $updateTime）"}$staleTag",
                 totalRooms = selected.size,
                 groups = ClassroomService.groupByBuilding(selected)
             )
 
-            resultCache[cacheKey] = result
-            resultCacheAt[cacheKey] = System.currentTimeMillis()
+            synchronized(resultCacheLock) {
+                resultCache[cacheKey] = result
+                resultCacheAt[cacheKey] = System.currentTimeMillis()
+            }
             return result
         }
 
         /** 清空结果缓存（本地缓存数据刷新后调用，防止 30 秒内旧结果遮蔽新数据） */
         fun clearResultCache() {
-            resultCache.clear()
-            resultCacheAt.clear()
+            synchronized(resultCacheLock) {
+                resultCache.clear()
+                resultCacheAt.clear()
+            }
         }
 
         /** 提取页面"本表更新于"时间 */
@@ -389,12 +323,15 @@ class CloudService(private val http: HttpService = HttpService()) {
                 val token = StringBuilder()
                 while (j < html.length) {
                     val ch = html[j]
-                    if (ch == '"' || ch == '\'' || ch == ' ' || ch == '>') break
+                    if (ch == '"' || ch == '\'' || ch == ' ' || ch == '\t' ||
+                        ch == '\r' || ch == '\n' || ch == '>'
+                    ) break
                     token.append(ch)
                     j++
                 }
                 val hit = parseCellToken(token.toString())
                 if (hit != null) {
+                    hit.markerIdx = idx
                     // 内容起点跳到本标记所在标签的闭合 '>' 之后：标记可能位于 id/onclick 等
                     // 属性值里，从引号后直接切片会把 `">` 这类属性收尾混进格文本。
                     var k = j
@@ -414,6 +351,7 @@ class CloudService(private val http: HttpService = HttpService()) {
                 }
                 val tIdx = html.indexOf("</table>", hits[i].start)
                 if (tIdx >= 0 && tIdx < end) end = tIdx
+                if (end < hits[i].start) end = hits[i].start
                 val cellHtml = html.substring(hits[i].start, end)
                 val names = extractRoomNames(cellHtml)
                 val building = if (hits[i].code == "GXG") "工学馆" else buildingName(hits[i].code)
@@ -542,5 +480,166 @@ class CloudService(private val http: HttpService = HttpService()) {
             }
             return commonRooms ?: emptySet()
         }
+    }
+
+    /** 执行自建服务器 / 公共镜像 / WebVPN 代理抓取并原子落盘 */
+    private suspend fun fetchAndSave(
+        context: Context,
+        serverUrl: String,
+        webvpnCookies: String,
+        webFetcher: (suspend (url: String) -> String)?,
+        onProgress: ((String) -> Unit)?
+    ): CloudFetchResult {
+        // ② 自建服务器（境内可达性最好；文本格式与本地缓存一致，零解析成本）。
+        //    该网络环境下原生 http 可能被整体重置，因此原生与 WebView 双通道都尝试。
+        var serverErr = "未配置"
+        if (serverUrl.isNotEmpty()) {
+            var body = ""
+            var via = ""
+            if (webFetcher != null) {
+                try {
+                    body = webFetcher(serverUrl)
+                    via = "WebView"
+                } catch (_: Exception) {
+                    body = ""
+                }
+            }
+            if (!body.startsWith("NEUQ_CACHE_V1")) {
+                // WebView 渠道未取得有效文本时，再用原生 http 尝试
+                try {
+                    val resp = http.get(serverUrl)
+                    if (resp.status < 400) {
+                        body = resp.body
+                        via = "原生"
+                    }
+                } catch (_: Exception) {
+                    // 忽略，走最终诊断
+                }
+            }
+            // WebView 以 text/plain 渲染时会把文本包进 <pre>，此处还原纯文本
+            val sIdx = body.indexOf("NEUQ_CACHE_V1")
+            if (sIdx > 0) {
+                val eIdx = body.indexOf("</pre>", sIdx)
+                body = if (eIdx >= 0) body.substring(sIdx, eIdx) else body.substring(sIdx)
+            }
+            if (body.startsWith("NEUQ_CACHE_V1")) {
+                val data = CloudCache.fromText(body)
+                if (data != null && data.rooms.isNotEmpty()) {
+                    // 同步刷新本地缓存文件
+                    CloudCache.save(context, data.updateTime, data.rooms, data.roomDays)
+                    clearResultCache() // 新数据落盘：丢弃 30 秒内的旧结果缓存
+                    return CloudFetchResult(data, "自建服务器（$via）")
+                }
+                serverErr = "${via}通道响应 ${body.length} 字节但无有效数据"
+            } else {
+                serverErr = "${via}通道无有效内容（响应 ${body.length} 字节）"
+            }
+            Logger.warn("自建服务器获取失败: $serverErr，回退公共镜像")
+        }
+
+        // ③ 拉取整页并解析全部 7 天（多镜像依次尝试）
+        onProgress?.invoke("正在获取云端数据（每小时更新）...")
+        var html = ""
+        var lastErr = ""
+        for (mirror in MIRRORS) {
+            try {
+                var body = ""
+                if (webFetcher != null) {
+                    body = webFetcher(mirror)
+                } else {
+                    val resp = http.get(mirror)
+                    body = if (resp.status < 400) resp.body else ""
+                }
+                if (body.isNotEmpty() && body.contains("day-0")) {
+                    html = body
+                    break
+                }
+                lastErr = "$mirror（获取 ${body.length} 字节，" +
+                    "含day-0:${body.contains("day-0")}）"
+            } catch (e: Exception) {
+                lastErr = "$mirror: ${e.message}"
+                Logger.warn("云端镜像不可达 $lastErr，尝试下一个")
+            }
+        }
+        // WebView 优先失败后，再用原生 http 对两个镜像兜底一次（不同网络栈表现可能不同）
+        if (html.isEmpty() && webFetcher != null) {
+            for (mirror in MIRRORS) {
+                try {
+                    val resp = http.get(mirror)
+                    if (resp.status < 400 && resp.body.contains("day-0")) {
+                        html = resp.body
+                        break
+                    }
+                    lastErr = "$mirror（原生，状态码 ${resp.status}）"
+                } catch (e: Exception) {
+                    lastErr = "$mirror（原生）: ${e.message}"
+                }
+            }
+        }
+        // ③ 兜底：直连镜像均被重置且有 WebVPN 会话时，经网关代理获取
+        //    （校园网侧访问 Cloudflare 通常可达；需要有效的 WebVPN 会话 Cookie）
+        if (html.isEmpty() && webvpnCookies.isNotEmpty()) {
+            try {
+                onProgress?.invoke("直连镜像不可达，尝试经 WebVPN 代理获取...")
+                val proxied = WebvpnCrypto.buildResourceUrl(WEBVPN_BASE, CLOUD_URL)
+                val vpnHttp = HttpService()
+                vpnHttp.cookieStore.importFromHeader(webvpnCookies)
+                val vpnResp = vpnHttp.get(proxied)
+                if (vpnResp.status < 400 && vpnResp.body.contains("day-0")) {
+                    html = vpnResp.body
+                }
+            } catch (e: Exception) {
+                Logger.warn("WebVPN 代理获取云端失败: ${e.message}")
+            }
+        }
+        if (html.isEmpty()) {
+            val viaVpn = if (webvpnCookies.isNotEmpty()) "（含 WebVPN 代理路径）" else ""
+            throw AppError.fetch(
+                "云端数据获取失败$viaVpn。服务器:$serverErr；" +
+                    "镜像:$lastErr。" +
+                    "建议：核对服务器接口地址与TOKEN；更换网络重试；或切实时查询来源。"
+            )
+        }
+
+        val updateTime = extractUpdateTime(html)
+        val rooms = mutableListOf<ProcessedClassroomData>()
+        val roomDays = mutableListOf<Int>()
+        var totalCells = 0
+        for (d in 0..6) {
+            val dayRooms = parseDayHtml(html, d)
+            Logger.info("[cloud] day-$d 解析 ${dayRooms.size} 格")
+            totalCells += dayRooms.size
+            for (r in dayRooms) {
+                rooms.add(r)
+                roomDays.add(d)
+            }
+        }
+        Logger.info(
+            "[cloud] 解析完成: $totalCells 格 / ${rooms.size} 间, " +
+                "页面 ${html.length} 字节, 更新时间 $updateTime"
+        )
+        if (totalCells == 0) {
+            val gIdx = html.indexOf("GXG1F1-2")
+            val snippet = if (gIdx >= 0) {
+                html.substring(maxOf(0, gIdx - 60), minOf(html.length, gIdx + 40))
+                    .replace(Regex("\\s+"), " ")
+            } else "页面中未找到 GXG1F1-2"
+            throw AppError.fetch(
+                "云端页面解析到 0 个数据格（页面 ${html.length} 字节）。" +
+                    "服务器分支:$serverErr。" +
+                    "GXG1F1-2 附近内容: $snippet。请完整截图反馈"
+            )
+        }
+        CloudCache.save(context, updateTime, rooms, roomDays)
+        clearResultCache() // 新数据落盘：丢弃 30 秒内的旧结果缓存
+
+        val data = CloudCacheData().apply {
+            this.updateTime = updateTime
+            this.fetchedAt = System.currentTimeMillis()
+            this.rooms = rooms
+            this.roomDays = roomDays
+            buildIndex()
+        }
+        return CloudFetchResult(data, "云端")
     }
 }

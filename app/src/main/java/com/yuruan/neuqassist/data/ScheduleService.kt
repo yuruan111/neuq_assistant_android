@@ -49,7 +49,19 @@ data class ImportResult(
 
 /** 会话过期特征 */
 private fun isSessionPage(html: String): Boolean =
-    html.contains("请登录") || html.contains("actionError")
+    html.contains("请登录") ||
+        html.contains("actionError") ||
+        html.contains("casLoginForm") ||
+        html.contains("pwdDefaultEncryptSalt") ||
+        html.contains("/do-login") ||
+        html.contains("/set-fingerprint") ||
+        html.contains("form['password']")
+
+private val IDS_RE =
+    Regex("bg\\.form\\.addInput\\(\\s*form\\s*,\\s*[\"']ids[\"']\\s*,\\s*[\"'](\\d+)[\"']\\s*\\)")
+
+private val SEMESTER_TAG_RE =
+    Regex("id\\s*=\\s*[\"'](semesterBar\\d+Semester)[\"']")
 
 /** 取 JS 字面量字符串内容；变量拼接回退为变量名 */
 private fun unquoteJsLiteral(tokenIn: String): String {
@@ -302,6 +314,7 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
     fun applyWebSession(cookieHeader: String) {
         http.cookieStore.clear()
         http.cookieStore.importFromHeader(cookieHeader)
+        loggedIn = true
     }
 
     /** 账号密码登录教务（2026-10 起教务走统一身份认证 CAS；内含 WebVPN 会话建立） */
@@ -344,9 +357,10 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
 
     /** 第一步：拉取可选学期列表 */
     suspend fun fetchTerms(): List<TermInfo> {
+        ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
         val html = getEntryHtml()
-        val idsM = Regex("bg\\.form\\.addInput\\(form,\"ids\",\"(\\d+)\"\\)").find(html)
-        val tagM = Regex("id=\"(semesterBar\\d+Semester)\"").find(html)
+        val idsM = IDS_RE.find(html)
+        val tagM = SEMESTER_TAG_RE.find(html)
         if (idsM == null || tagM == null) {
             throw AppError.process("未能识别学号或学期组件，请确认已登录教务")
         }
@@ -368,7 +382,7 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
     suspend fun fetchSchedule(semesterId: String, termName: String): ImportResult {
         ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
         val html = getEntryHtml()
-        val idsM = Regex("bg\\.form\\.addInput\\(form,\"ids\",\"(\\d+)\"\\)").find(html)
+        val idsM = IDS_RE.find(html)
             ?: throw AppError.process("未能识别学号，请确认已登录")
 
         val url = webvpn.proxiedAsync(

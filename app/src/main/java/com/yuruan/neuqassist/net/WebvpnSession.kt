@@ -63,9 +63,11 @@ class WebvpnSession(
      * UI 侧读取 `WebvpnSession.Cooldown.cooldownLeft`。
      */
     object Cooldown {
+        @Volatile
         var cooldownLeft: Int = 0
             internal set
 
+        @Volatile
         var cooldownCanceled: Boolean = false
             internal set
     }
@@ -103,60 +105,74 @@ class WebvpnSession(
         ensureFingerprint()
 
         var resp = client.get(loginUrl)
-        var action = loginUrl
+        if (resp.status >= 400) {
+            throw AppError.fetch("获取 WebVPN 统一身份认证登录页失败（HTTP ${resp.status}）")
+        }
         var html = resp.body
         if (html.contains("/set-fingerprint")) {
             ensureFingerprint()
             resp = client.get(loginUrl)
-            action = loginUrl
+            if (resp.status >= 400) {
+                throw AppError.fetch("获取 WebVPN 统一身份认证登录页失败（HTTP ${resp.status}）")
+            }
             html = resp.body
+        }
+        if (html.contains("/set-fingerprint")) {
+            throw AppError.fetch(
+                "WebVPN 网关反复要求设置设备指纹，会话无法建立。请检查网关地址填写是否正确、当前网络能否访问 $base"
+            )
         }
 
         // 已处于登录态（cookie 有效）时会直接进入门户页
-        if (!html.contains("casLoginForm")) {
+        if (!CasPageParser.isCasLoginPage(html)) {
             Logger.info("WebVPN 会话仍然有效，无需重新登录")
             return
         }
 
-        val salt = extractHiddenOrJs(html, "pwdDefaultEncryptSalt")
-            ?: throw AppError.fetch("统一身份认证登录页解析失败：未找到密码加密盐")
-        val lt = extractHiddenInput(html, "lt")
-            ?: throw AppError.fetch("统一身份认证登录页解析失败：未找到 lt")
-        val execution = extractHiddenInput(html, "execution")
-            ?: throw AppError.fetch("统一身份认证登录页解析失败：未找到 execution")
-
-        // 表单 action 即当前页面 URL（经过 WebVPN 代理的 authserver 登录地址）：
-        // authserver 登录页内 <form> 的 action 属性
-        val actionMatch = Regex("<form[^>]*action=\"([^\"]+)\"[^>]*>", RegexOption.IGNORE_CASE)
-            .find(html)
-        if (actionMatch != null) {
-            var act = actionMatch.groupValues[1]
-            if (act.startsWith("/")) {
-                // 经 WebVPN 代理的相对地址需还原为代理绝对地址：
-                // 形如 /http/{加密段}/... 的路径直接拼在 WebVPN base 上
-                act = "$base$act"
-            }
-            action = act
+        val landingUrl = resp.finalUrl.ifEmpty { loginUrl }
+        val salt = CasPageParser.extractCasSalt(html).ifEmpty {
+            throw AppError.fetch(
+                "统一身份认证登录页解析失败：未找到密码加密盐（pwdDefaultEncryptSalt）。" +
+                    "页面特征：${CasPageParser.casPageDigest(html)}"
+            )
         }
+        val lt = CasPageParser.extractHiddenInputValue(html, "lt")
+        val execution = CasPageParser.extractHiddenInputValue(html, "execution").ifEmpty {
+            throw AppError.fetch(
+                "统一身份认证登录页解析失败：未找到 execution 字段。" +
+                    "页面特征：${CasPageParser.casPageDigest(html)}"
+            )
+        }
+        val action = CasPageParser.resolveFormAction(html, landingUrl)
 
         val encryptedPassword = WebvpnCrypto.encryptCasPassword(config.password, salt)
-        val params = listOf(
+        val params = mutableListOf(
             ParamPair("username", config.username),
             ParamPair("password", encryptedPassword),
-            ParamPair("lt", lt),
             ParamPair("dllt", "userNamePasswordLogin"),
             ParamPair("execution", execution),
             ParamPair("_eventId", "submit"),
             ParamPair("rmShown", "1")
         )
+        if (lt.isNotEmpty()) {
+            params.add(2, ParamPair("lt", lt))
+        }
 
-        resp = client.postForm(action, params)
-        val body = resp.body
+        val postResp = client.postForm(action, params)
+        if (postResp.status >= 400) {
+            throw AppError.fetch("统一身份认证登录请求失败（HTTP ${postResp.status}）")
+        }
+        val body = postResp.body
+        val respAction = CasPageParser.extractFormAction(body)
+        val postFinalUrl = postResp.finalUrl
 
-        // 失败时 authserver 会重新渲染登录页；成功时重定向回 WebVPN 门户
-        if (action.contains("authserver") || body.contains("casLoginForm")) {
-            var reason = extractCasError(body)
-                ?: "未知原因（可能用户名或密码错误，或需要验证码）"
+        // 失败时 authserver 会重新渲染登录页或停留在 authserver；成功时重定向回 WebVPN 门户
+        if (CasPageParser.isCasLoginPage(body) ||
+            respAction.contains("authserver") ||
+            postFinalUrl.contains("authserver")
+        ) {
+            var reason = CasPageParser.extractCasFailureReason(body)
+                .ifEmpty { "未知原因（可能用户名或密码错误，或需要验证码）" }
             if (reason.contains("验证码")) {
                 reason += "（IP 短时间内登录失败次数过多，请稍后重试或更换网络环境）"
             }
@@ -181,9 +197,18 @@ class WebvpnSession(
             resp = client.get(loginUrl)
             html = resp.body
         }
+        if (resp.status >= 400) {
+            throw AppError.fetch("获取 WebVPN 本地登录页失败（HTTP ${resp.status}）")
+        }
+        if (html.contains("/set-fingerprint")) {
+            throw AppError.fetch(
+                "WebVPN 网关反复要求设置设备指纹，会话无法建立。请检查网关地址填写是否正确、当前网络能否访问 $base"
+            )
+        }
 
-        val csrf = extractCsrf(html)
-            ?: throw AppError.fetch("WebVPN 登录页解析失败：未找到 _csrf 字段")
+        val csrf = CasPageParser.extractHiddenInputValue(html, "_csrf").ifEmpty {
+            throw AppError.fetch("WebVPN 登录页解析失败：未找到 _csrf 字段")
+        }
 
         val params = listOf(
             ParamPair("_csrf", csrf),
@@ -200,15 +225,18 @@ class WebvpnSession(
 
         // 解析 /do-login 的 JSON 响应 { success, url, error, message }
         val body = resp.body
-        val success = Regex("\"success\"\\s*:\\s*true").containsMatchIn(body)
-        if (!success) {
-            val errMsg = extractJsonString(body, "message") ?: ""
-            val errCode = extractJsonString(body, "error") ?: ""
-            if (errCode == "TOO_MANY_ATTEMPTS" || errMsg.contains("稍后")) {
-                Logger.warn("WebVPN 登录被限流，进入 8s 可取消冷却倒计时")
-                cooldownCountdown(8)
-                throw AppError.fetch("WebVPN 登录被限流（同一 IP 短时间内登录过多）: $errMsg")
-            }
+        val errMsg = unescapeJsonString(extractJsonString(body, "message") ?: "")
+        val errCode = unescapeJsonString(extractJsonString(body, "error") ?: "")
+        val jumpUrl = unescapeJsonString(extractJsonString(body, "url") ?: "")
+        if (errCode == "TOO_MANY_ATTEMPTS" || errMsg.contains("稍后")) {
+            Logger.warn("WebVPN 登录被限流，进入 8s 可取消冷却倒计时")
+            cooldownCountdown(8)
+            throw AppError.fetch("WebVPN 登录被限流（同一 IP 短时间内登录过多）: $errMsg")
+        }
+        val successField = jsonBoolField(body, "success")
+        val succeeded = (successField == true) ||
+            (successField == null && jumpUrl.isNotEmpty() && errCode.isEmpty())
+        if (!succeeded) {
             throw AppError.loginFailed(
                 "WebVPN 本地账号登录失败: $errMsg ($errCode)。" +
                     "WebVPN 本地账号与统一身份认证账号可能不是同一套，" +
@@ -217,10 +245,8 @@ class WebvpnSession(
         }
 
         // 登录成功后访问跳转目标以完成会话建立
-        val jumpUrl = extractJsonString(body, "url") ?: ""
         if (jumpUrl.isNotEmpty()) {
-            val finishUrl =
-                if (jumpUrl.startsWith("http")) jumpUrl else "$base$jumpUrl"
+            val finishUrl = resolveAfterLoginUrl(base, jumpUrl)
             client.get(finishUrl)
         }
         Logger.info("WebVPN 登录成功")
@@ -229,58 +255,80 @@ class WebvpnSession(
     /**
      * 登录限流冷却倒计时（T-14b-2）：替代原先冻结 30 秒且不可取消的 sleep。
      * 剩余秒数写入 Cooldown.cooldownLeft 供查询页展示倒计时；
-     * 用户点「取消等待」置 Cooldown.cooldownCanceled = true 时立即结束。
+     * 用户点「取消等待」置 Cooldown.cooldownCanceled = true 时立即结束（200ms 粒度响应）。
      * 冷却结束后仍抛限流错误（与旧行为一致），取消只是让用户尽早拿回控制权。
      */
     private suspend fun cooldownCountdown(seconds: Int) {
         Cooldown.cooldownCanceled = false
-        for (left in seconds downTo 1) {
-            Cooldown.cooldownLeft = left
-            kotlinx.coroutines.delay(1000)
-            if (Cooldown.cooldownCanceled) break
+        try {
+            for (left in seconds downTo 1) {
+                Cooldown.cooldownLeft = left
+                for (step in 0 until 5) {
+                    if (Cooldown.cooldownCanceled) return
+                    kotlinx.coroutines.delay(200)
+                }
+            }
+        } finally {
+            Cooldown.cooldownLeft = 0
+            Cooldown.cooldownCanceled = false
         }
-        Cooldown.cooldownLeft = 0
-        Cooldown.cooldownCanceled = false
     }
 
-    /** 提取 `<input type="hidden" name="xxx" value="yyy">` 的 value */
-    private fun extractHiddenInput(html: String, name: String): String? {
-        val m = Regex("name=\"$name\"\\s+value=\"([^\"]+)\"").find(html) ?: return null
-        return m.groupValues[1]
+    private fun resolveAfterLoginUrl(base: String, url: String): String {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return base
+        if (trimmed.contains("://")) return trimmed
+        if (trimmed.startsWith("//")) return "https:$trimmed"
+        return if (trimmed.startsWith("/")) "$base$trimmed" else "$base/$trimmed"
     }
 
-    /** 提取金智 authserver 密码加密盐：兼容隐藏字段（name=/id=）与 JS 变量两种形式 */
-    private fun extractHiddenOrJs(html: String, name: String): String? {
-        val patterns = listOf(
-            "name=\"$name\"\\s+value=\"([^\"]+)\"",
-            "id=\"$name\"\\s+value=\"([^\"]+)\"",
-            "$name\\s*=\\s*\"([^]+)\""
-        )
-        for (p in patterns) {
-            val m = Regex(p).find(html)
-            if (m != null && m.groupValues.size > 1 && m.groupValues[1].isNotEmpty()) {
-                return m.groupValues[1]
+    private fun jsonBoolField(text: String, field: String): Boolean? {
+        val m = Regex("\"$field\"\\s*:\\s*(true|false)", RegexOption.IGNORE_CASE).find(text)
+        if (m != null) return m.groupValues[1].equals("true", ignoreCase = true)
+        val str = extractJsonString(text, field)?.trim()?.lowercase()
+        return when (str) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
+    }
+
+    /** 还原 JSON 字符串值中的转义序列（含 \uXXXX，保证中文限流提示可正常识别与展示） */
+    private fun unescapeJsonString(raw: String): String {
+        if (raw.isEmpty()) return ""
+        val out = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val ch = raw[i]
+            if (ch != '\\' || i + 1 >= raw.length) {
+                out.append(ch)
+                i++
+                continue
+            }
+            val next = raw[i + 1]
+            if (next == 'u' && i + 6 <= raw.length) {
+                val code = raw.substring(i + 2, i + 6).toIntOrNull(16)
+                if (code != null) {
+                    out.append(code.toChar())
+                    i += 6
+                    continue
+                }
+            }
+            when (next) {
+                'n', 'r', 't', 'f', 'b' -> {
+                    out.append(' ')
+                    i += 2
+                }
+                '"', '\\', '/' -> {
+                    out.append(next)
+                    i += 2
+                }
+                else -> {
+                    out.append(ch)
+                    i++
+                }
             }
         }
-        return null
+        return out.toString().trim()
     }
-
-    /** 从金智 authserver 错误页提取错误提示（`<span id="msg" class="errMsg">`） */
-    private fun extractCasError(html: String): String? {
-        val patterns = listOf(
-            "<span[^>]*id=\"msg\"[^>]*>\\s*([^<]+?)\\s*</span>",
-            "<span[^>]*class=\"errMsg\"[^>]*>\\s*([^<]+?)\\s*</span>",
-            "id=\"errorMsg\"[^>]*>\\s*([^<]+?)\\s*</span>"
-        )
-        for (p in patterns) {
-            val m = Regex(p).find(html)
-            if (m != null) {
-                val msg = m.groupValues[1].trim()
-                if (msg.isNotEmpty()) return msg
-            }
-        }
-        return null
-    }
-
-    private fun extractCsrf(html: String): String? = extractHiddenInput(html, "_csrf")
 }

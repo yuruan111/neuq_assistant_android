@@ -3,17 +3,23 @@ package com.yuruan.neuqassist.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -23,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -129,6 +136,9 @@ fun ScheduleScreen(
                     fontScaleKey = fontScaleKey,
                     cardRadiusDp = cardRadiusDp,
                     onCourseClick = onCourseClick,
+                    onBlankDoubleTap = {
+                        if (currentWeek != realWeek) onQuickJumpEmpty()
+                    },
                     availableHeight = 480.dp
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -136,12 +146,44 @@ fun ScheduleScreen(
                     text = if (currentWeek == realWeek) {
                         "提示：查看其他周时，双击课表空白处回到本周"
                     } else {
-                        "第${currentWeek}周（非本周）· 点击「回到本周」按钮返回"
+                        "第${currentWeek}周（非本周）· 点击「回到本周」或双击空白处返回"
                     },
                     fontSize = 11.sp,
                     color = TextTertiary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
+            }
+
+            if (courses.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        color = Color(0xE6FFFFFF),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "当前暂无课程",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0x80182431)
+                            )
+                            Text(
+                                text = "点击右上角「⋯」导入或手动添加课程",
+                                fontSize = 11.sp,
+                                color = Color(0x66182431)
+                            )
+                        }
+                    }
+                }
             }
 
             // 非本周时悬浮「回到本周」按钮（对应原端双击空白处回到本周）
@@ -303,6 +345,7 @@ fun CoursesManagerScreen(
     formEnd: Int,
     formColor: Int,
     formWeeks: List<Int>,
+    formSingleMode: Boolean = false,
     slotCount: Int,
     onFormName: (String) -> Unit,
     onFormTeacher: (String) -> Unit,
@@ -320,32 +363,47 @@ fun CoursesManagerScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier.fillMaxSize()) {
-        Row(
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFFF2F3F5))
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {}
+    ) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
                 .background(Color.White)
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
         ) {
-            Text(
-                text = "←",
-                fontSize = 18.sp,
-                color = TextPrimary,
-                modifier = Modifier.clickable { onBack() }.padding(4.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = when (editMode) {
-                    "" -> "课程管理"
-                    "add" -> "添加课程"
-                    else -> "编辑课程"
-                },
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                color = TextPrimary
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "←",
+                    fontSize = 18.sp,
+                    color = TextPrimary,
+                    modifier = Modifier.clickable { onBack() }.padding(4.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when (editMode) {
+                        "" -> "课程管理"
+                        "add" -> "添加课程"
+                        else -> "编辑课程"
+                    },
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextPrimary
+                )
+            }
         }
 
         if (editMode == "") {
@@ -452,22 +510,54 @@ fun CoursesManagerScreen(
                 }
 
                 FormLabel("节次：第 $formStart - $formEnd 节")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("开始", fontSize = 12.sp, color = TextSecondary)
-                    val starts = listOf(1, 3, 5, 7, 9, 11).filter { it <= slotCount }
-                    starts.forEach { s ->
-                        SectionChip("$s", formStart == s) { onFormStart(s) }
+                val baseMax = if (slotCount > 0) slotCount else 12
+                val startUpper = maxOf(baseMax, formStart, 1)
+                val endUpper = maxOf(baseMax, formEnd, formStart)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        "开始",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    androidx.compose.foundation.layout.FlowRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (s in 1..startUpper) {
+                            SectionChip("$s", formStart == s) { onFormStart(s) }
+                        }
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("结束", fontSize = 12.sp, color = TextSecondary)
-                    val upper = maxOf(slotCount, formEnd)
-                    for (e in formStart..minOf(formStart + 3, upper)) {
-                        SectionChip("$e", formEnd == e) { onFormEnd(e) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        "结束",
+                        fontSize = 12.sp,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    androidx.compose.foundation.layout.FlowRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for (e in formStart..endUpper) {
+                            SectionChip("$e", formEnd == e) { onFormEnd(e) }
+                        }
                     }
                 }
 
                 FormLabel("周次")
+                val presetKey = weekPresetKey(formWeeks, formSingleMode)
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -476,9 +566,10 @@ fun CoursesManagerScreen(
                         "all" to "全学期", "odd" to "单周", "even" to "双周",
                         "first" to "前半", "last" to "后半", "single" to "单次"
                     ).forEach { (k, label) ->
-                        SectionChip(label, weekPresetKey(formWeeks) == k) { onApplyWeekPreset(k) }
+                        SectionChip(label, presetKey == k) { onApplyWeekPreset(k) }
                     }
-                }                // 周次数字（FlowRow）
+                }
+                // 周次数字（FlowRow）
                 androidx.compose.foundation.layout.FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -502,6 +593,13 @@ fun CoursesManagerScreen(
                             )
                         }
                     }
+                }
+                if (presetKey == "single") {
+                    Text(
+                        "单次课仅在该周显示，可用于考试、补课、活动提醒",
+                        fontSize = 10.sp,
+                        color = Color(0xFFB25E00)
+                    )
                 }
                 Text("已选：${weeksText(formWeeks)}", fontSize = 11.sp, color = TextSecondary)
 
@@ -562,11 +660,12 @@ private fun SectionChip(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 /** 当前表单命中的预设键 */
-fun weekPresetKey(formWeeks: List<Int>): String = when {
+fun weekPresetKey(formWeeks: List<Int>, singleMode: Boolean = false): String = when {
     formWeeks == ScheduleViewUtil.allWeeks() -> "all"
     formWeeks == ScheduleViewUtil.oddWeeks() -> "odd"
     formWeeks == ScheduleViewUtil.evenWeeks() -> "even"
     formWeeks == ScheduleViewUtil.firstHalfWeeks() -> "first"
     formWeeks == ScheduleViewUtil.lastHalfWeeks() -> "last"
+    singleMode -> "single"
     else -> "custom"
 }

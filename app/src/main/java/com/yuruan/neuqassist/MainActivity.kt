@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -85,7 +86,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
         setContent {
             // 主题强调色由个性化设置驱动（对应 hap AppStorage 的 themePrimary）：
             // 切换预设时整个 setContent 重组，底栏选中态 / 按钮 / 滑块 / 课表今日态全部联动
@@ -145,6 +155,7 @@ fun MainScreen(
     var showFaq by remember { mutableStateOf(false) }
     var showPreview by remember { mutableStateOf(false) }
     var previewCourse by remember { mutableStateOf<com.yuruan.neuqassist.data.CourseItem?>(null) }
+    var pendingEmptyImport by remember { mutableStateOf<com.yuruan.neuqassist.data.CourseFileImport?>(null) }
     var toastMsg by remember { mutableStateOf("") }
 
     // 课程编辑表单状态（课程管理面板与「课程预览 → 编辑」共用，故提升到本层作用域）
@@ -158,6 +169,9 @@ fun MainScreen(
     var formEnd by remember { mutableStateOf(2) }
     var formColor by remember { mutableStateOf(0) }
     var formWeeks by remember { mutableStateOf((1..20).toList()) }
+    var formRemark by remember { mutableStateOf("") }
+    var formSingleMode by remember { mutableStateOf(false) }
+    var formSingleTaps by remember { mutableIntStateOf(0) }
 
     /** 载入某门课程到编辑表单（预览页「编辑」与列表「✏️」共用） */
     fun startEditCourse(course: com.yuruan.neuqassist.data.CourseItem) {
@@ -171,6 +185,9 @@ fun MainScreen(
         formEnd = course.endSection
         formColor = course.colorIndex
         formWeeks = course.weeks
+        formRemark = course.remark
+        formSingleMode = course.weeks.size == 1
+        formSingleTaps = 0
     }
 
     /** 清空表单并进入新增模式 */
@@ -185,6 +202,9 @@ fun MainScreen(
         formEnd = 2
         formColor = (0..7).random()
         formWeeks = (1..20).toList()
+        formRemark = ""
+        formSingleMode = false
+        formSingleTaps = 0
     }
 
     // ===== 隐私闸门 =====
@@ -194,7 +214,8 @@ fun MainScreen(
             AppBackdrop(
                 bgEnabled = vm.bgEnabled,
                 bgImagePath = vm.bgImagePath,
-                bgDim = vm.bgDim
+                bgDim = vm.bgDim,
+                bgVersion = vm.bgVersion
             )
             ConsentDialog(
                 onAgree = { vm.agreePrivacy() },
@@ -206,12 +227,16 @@ fun MainScreen(
 
     // ===== 网页登录全屏页 =====
     if (showWebLogin) {
+        BackHandler { showWebLogin = false }
         WebLoginPage(
             mode = webLoginMode,
             onSessionExtracted = { cookies ->
-                vm.onWebLoginSuccess(webLoginMode)
+                vm.onWebLoginSuccess(webLoginMode, cookies)
                 showWebLogin = false
                 toastMsg = "登录会话已获取，可直接查询"
+                if (showImport && !vm.importBusy) {
+                    vm.fetchTerms { _, _ -> }
+                }
             },
             onBack = { showWebLogin = false }
         )
@@ -223,6 +248,7 @@ fun MainScreen(
     // 避免设备未装浏览器时「打不开」
     val webUrl = webViewUrl
     if (webUrl != null) {
+        BackHandler { webViewUrl = null }
         com.yuruan.neuqassist.ui.screens.WebViewPage(
             url = webUrl,
             title = webViewTitle,
@@ -233,6 +259,7 @@ fun MainScreen(
 
     // ===== 校历 PDF 查看页 =====
     if (showCalendarPdf) {
+        BackHandler { showCalendarPdf = false }
         com.yuruan.neuqassist.ui.screens.CalendarPdfScreen(
             onBack = { showCalendarPdf = false }
         )
@@ -249,11 +276,14 @@ fun MainScreen(
                 val text = context.contentResolver.openInputStream(uri)?.use {
                     it.readBytes().toString(Charsets.UTF_8)
                 } ?: ""
-                vm.importFromFile(text) { ok, msg ->
-                    if (ok) {
-                        showImport = false
-                        toastMsg = msg
-                    } else {
+                val parsed = vm.parseCourseFile(text)
+                if (parsed == null) {
+                    toastMsg = "未能从文件中识别到课表，请确认选择的是教务「导出」的学生课表文件"
+                } else if (parsed.courses.isEmpty()) {
+                    pendingEmptyImport = parsed
+                } else {
+                    vm.applyParsedCourseFile(parsed) { ok, msg ->
+                        if (ok) showImport = false
                         toastMsg = msg
                     }
                 }
@@ -269,7 +299,8 @@ fun MainScreen(
         AppBackdrop(
             bgEnabled = vm.bgEnabled,
             bgImagePath = vm.bgImagePath,
-            bgDim = vm.bgDim
+            bgDim = vm.bgDim,
+            bgVersion = vm.bgVersion
         )
         Column(modifier = Modifier.fillMaxSize()) {
             // 内容区
@@ -309,7 +340,10 @@ fun MainScreen(
                             showPreview = true
                         },
                         onQuickJumpEmpty = {
-                            if (vm.currentWeek != vm.realWeek) vm.switchWeek(0)
+                            if (vm.currentWeek != vm.realWeek) {
+                                vm.hapticTick()
+                                vm.jumpToRealWeek()
+                            }
                         }
                     )
 
@@ -332,14 +366,25 @@ fun MainScreen(
                         onCancelCooldown = { vm.cancelCooldown() },
                         onQuery = { vm.doQuery() },
                         onBulkUpdate = { vm.updateRecentAll() },
-                        onOpenSettings = { showClassroomSettings = true }
+                        onOpenSettings = { showClassroomSettings = true },
+                        onRoomClick = { room ->
+                            toastMsg = if (room.equipmentConfig.isEmpty()) {
+                                room.name
+                            } else {
+                                "${room.name} · ${room.equipmentConfig}"
+                            }
+                        }
                     )
 
                     Tab.XIAOQIN -> XiaoQinScreen(
                         sessionModeLabel = vm.sessionModeLabel,
                         vm = vm,
                         onWebLogin = {
-                            webLoginMode = "webvpn"
+                            webLoginMode = when (vm.sessionMode) {
+                                "eams" -> "eams"
+                                "webvpn" -> "webvpn"
+                                else -> if (vm.useWebvpn) "webvpn" else "eams"
+                            }
                             showWebLogin = true
                         },
                         onLogout = { vm.logout() },
@@ -400,13 +445,20 @@ fun MainScreen(
                 terms = vm.terms,
                 onStartWebImport = {
                     if (vm.sessionCookies.isEmpty()) {
-                        webLoginMode = "webvpn"
+                        webLoginMode = if (vm.useWebvpn) "webvpn" else "eams"
                         showWebLogin = true
                     } else {
                         vm.fetchTerms { _, _ -> }
                     }
                 },
-                onPickTerm = { id -> vm.importScheduleViaWeb(id) { _, _ -> } },
+                onPickTerm = { id ->
+                    vm.importScheduleViaWeb(id) { ok, msg ->
+                        if (ok) {
+                            showImport = false
+                            toastMsg = msg
+                        }
+                    }
+                },
                 onPickFile = {
                     showImport = false
                     // 触发文件选择（SAF 系统选择器）
@@ -426,18 +478,43 @@ fun MainScreen(
         }
 
         if (showTimeSlots) {
+            var draftSlots by remember { mutableStateOf(vm.timeSlots) }
             TimeSlotsDialog(
-                slots = vm.timeSlots,
+                slots = draftSlots,
                 onSlotChange = { i, s ->
-                    val list = vm.timeSlots.toMutableList()
+                    val list = draftSlots.toMutableList()
                     list[i] = s
-                    vm.saveTimeSlots(list)
+                    draftSlots = list
                 },
-                onAddSlot = { vm.addTimeSlot() },
-                onRemoveSlot = { vm.removeTimeSlot(it) },
+                onAddSlot = {
+                    if (draftSlots.size < 15) {
+                        val last = draftSlots.last()
+                        val lastEnd = ScheduleViewUtil.toMinutes(last.endTime)
+                        var start = if (lastEnd >= 0) lastEnd + 10 else 8 * 60
+                        if (start + 45 > 1440) start = 8 * 60
+                        draftSlots = draftSlots + com.yuruan.neuqassist.data.TimeSlot(
+                            ScheduleViewUtil.fromMinutes(start),
+                            ScheduleViewUtil.fromMinutes(start + 45)
+                        )
+                    }
+                },
+                onRemoveSlot = { idx ->
+                    if (draftSlots.size > 1) {
+                        draftSlots = draftSlots.filterIndexed { i, _ -> i != idx }
+                    }
+                },
                 onSave = {
-                    vm.saveTimeSlots(vm.timeSlots)
-                    showTimeSlots = false
+                    val invalid = draftSlots.any {
+                        !ScheduleViewUtil.isValidTime(it.startTime) ||
+                            !ScheduleViewUtil.isValidTime(it.endTime)
+                    }
+                    if (invalid) {
+                        toastMsg = "时间格式不正确，请使用 24 小时制 HH:MM（如 08:00）"
+                    } else {
+                        vm.saveTimeSlots(draftSlots)
+                        showTimeSlots = false
+                        toastMsg = "节次时间已保存"
+                    }
                 },
                 onDismiss = { showTimeSlots = false }
             )
@@ -481,6 +558,9 @@ fun MainScreen(
         }
 
         if (showCourses) {
+            BackHandler {
+                if (courseEditMode.isNotEmpty()) courseEditMode = "" else showCourses = false
+            }
             CoursesManagerScreen(
                 courses = vm.scheduleCourses,
                 editingCourse = vm.scheduleCourses.firstOrNull { it.id == courseEditId },
@@ -493,6 +573,7 @@ fun MainScreen(
                 formEnd = formEnd,
                 formColor = formColor,
                 formWeeks = formWeeks,
+                formSingleMode = formSingleMode,
                 slotCount = vm.timeSlots.size,
                 onFormName = { formName = it },
                 onFormTeacher = { formTeacher = it },
@@ -502,17 +583,36 @@ fun MainScreen(
                 onFormEnd = { formEnd = it },
                 onFormColor = { formColor = it },
                 onToggleWeek = { w ->
-                    formWeeks = if (w in formWeeks) formWeeks - w else formWeeks + w
+                    val selected = w in formWeeks
+                    if (formSingleMode) {
+                        if (selected) {
+                            formSingleMode = false
+                        } else if (formSingleTaps == 0) {
+                            formWeeks = listOf(w)
+                            formSingleTaps = 1
+                            return@CoursesManagerScreen
+                        } else {
+                            formSingleMode = false
+                        }
+                    }
+                    formWeeks = if (selected) formWeeks - w else formWeeks + w
                 },
                 onApplyWeekPreset = { key ->
-                    formWeeks = when (key) {
-                        "all" -> (1..20).toList()
-                        "odd" -> (1..20 step 2).toList()
-                        "even" -> (2..20 step 2).toList()
-                        "first" -> (1..10).toList()
-                        "last" -> (11..20).toList()
-                        "single" -> listOf(vm.currentWeek.coerceIn(1, 20))
-                        else -> formWeeks
+                    if (key == "single") {
+                        formWeeks = listOf(vm.currentWeek.coerceIn(1, 20))
+                        formSingleMode = true
+                        formSingleTaps = 0
+                    } else {
+                        formSingleMode = false
+                        formSingleTaps = 0
+                        formWeeks = when (key) {
+                            "all" -> (1..20).toList()
+                            "odd" -> (1..20 step 2).toList()
+                            "even" -> (2..20 step 2).toList()
+                            "first" -> (1..10).toList()
+                            "last" -> (11..20).toList()
+                            else -> formWeeks
+                        }
                     }
                 },
                 onStartAdd = { startAddCourse() },
@@ -524,11 +624,9 @@ fun MainScreen(
                     } else if (formWeeks.isEmpty()) {
                         toastMsg = "请选择上课周次"
                     } else {
-                        val id = if (courseEditMode == "edit" && courseEditId.isNotEmpty()) {
-                            courseEditId
-                        } else {
-                            "c${System.currentTimeMillis()}"
-                        }
+                        val isEdit = courseEditMode == "edit" && courseEditId.isNotEmpty()
+                        val id = if (isEdit) courseEditId else "c${System.currentTimeMillis()}"
+                        val preservedRemark = if (isEdit) formRemark else ""
                         vm.addOrUpdateCourse(
                             com.yuruan.neuqassist.data.CourseItem(
                                 id = id,
@@ -537,10 +635,10 @@ fun MainScreen(
                                 position = formPosition.trim(),
                                 day = formDay,
                                 startSection = formStart,
-                                endSection = formEnd,
+                                endSection = maxOf(formStart, formEnd),
                                 colorIndex = formColor,
                                 weeks = formWeeks.sorted(),
-                                remark = ""
+                                remark = preservedRemark
                             )
                         )
                         courseEditMode = ""
@@ -549,6 +647,35 @@ fun MainScreen(
                 },
                 onBack = {
                     if (courseEditMode.isNotEmpty()) courseEditMode = "" else showCourses = false
+                }
+            )
+        }
+
+        pendingEmptyImport?.let { emptyImport ->
+            val sem = emptyImport.semesterName
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingEmptyImport = null },
+                title = { Text("导入空课表？") },
+                text = {
+                    Text(
+                        "已识别到${if (sem.isEmpty()) "" else "「$sem」"}课表网格，" +
+                            "但其中没有课程记录（0 门课程）。\n\n" +
+                            "确认导入会清空当前课表（含手动添加的课程），且不可恢复。"
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        pendingEmptyImport = null
+                        vm.applyParsedCourseFile(emptyImport) { ok, msg ->
+                            if (ok) showImport = false
+                            toastMsg = msg
+                        }
+                    }) { Text("确认导入") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        pendingEmptyImport = null
+                    }) { Text("取消") }
                 }
             )
         }
@@ -586,6 +713,7 @@ fun MainScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .navigationBarsPadding()
                     .padding(bottom = 80.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
@@ -674,10 +802,15 @@ private fun AdjustPanelDialog(
  * 值越大层越实，深色正文在任意背景（含照片纹理）上都有稳定对比度。
  */
 @Composable
-private fun AppBackdrop(bgEnabled: Boolean, bgImagePath: String, bgDim: Float) {
-    // 自定义图按需取样解码（大图降采样防 OOM）；路径变更 / 文件失效时重新判定
-    var customImage by remember(bgImagePath) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(bgImagePath) {
+private fun AppBackdrop(
+    bgEnabled: Boolean,
+    bgImagePath: String,
+    bgDim: Float,
+    bgVersion: Long = 0L
+) {
+    // 自定义图按需取样解码（大图降采样防 OOM）；路径或版本号变更 / 文件失效时重新解码
+    var customImage by remember(bgImagePath, bgVersion) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(bgImagePath, bgVersion) {
         if (bgImagePath.isEmpty()) {
             customImage = null
             return@LaunchedEffect

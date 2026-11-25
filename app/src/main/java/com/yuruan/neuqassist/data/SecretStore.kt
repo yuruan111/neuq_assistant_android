@@ -23,8 +23,12 @@ class SecretStore private constructor(private val prefs: SharedPreferences) {
         ""
     }
 
-    /** 写入 */
+    /** 写入（空串时清除旧条目并直接返回，不再写入空字符串） */
     fun save(alias: String, secret: String) {
+        if (secret.isEmpty()) {
+            remove(alias)
+            return
+        }
         try {
             prefs.edit().putString(alias, secret).apply()
         } catch (e: Exception) {

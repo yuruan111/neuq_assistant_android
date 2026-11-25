@@ -9,10 +9,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -93,11 +98,12 @@ fun CalendarPdfScreen(
     }
 
     Column(modifier = modifier.fillMaxSize().background(Color(0xFFF2F3F5))) {
-        // 顶栏：返回 / 标题 / 重新下载
+        // 顶栏：返回 / 标题 / 重新下载（白底铺进状态栏下方，避让状态栏与挖孔）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color.White)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top))
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -120,7 +126,13 @@ fun CalendarPdfScreen(
             }) { Text("重新下载", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
         }
 
-        when (state) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+        ) {
+            when (state) {
             "loading" -> Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -224,6 +236,7 @@ fun CalendarPdfScreen(
                     }
                 }
             }
+        }
         }
     }
 }

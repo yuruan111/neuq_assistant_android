@@ -201,15 +201,22 @@ object CourseFileParser {
             semesterName = it.groupValues[1]
         }
 
-        // 表头：列号 → 星期（col 0 = 节次列）；缺失时按位置兜底（col n → 星期 n）
+        // 表头：列号 → 星期（col 0 = 节次列）；仅扫描首个含「星期X」的表头行，避免数据行含 <th> 错位
         val dayByCol = HashMap<Int, Int>()
-        var thCol = 0
-        for (thM in Regex("<th[^>]*>([\\s\\S]*?)</th>").findAll(table)) {
-            val plainTh = toPlain(thM.groupValues[1])
-            for (d in 0 until 7) {
-                if (plainTh.contains("星期${WEEKDAY_CHARS[d]}")) dayByCol[thCol] = d + 1
+        val weekdayHeaderRe = Regex("星期[一二三四五六日]")
+        for (headerM in Regex("<tr[^>]*>([\\s\\S]*?)</tr>").findAll(table)) {
+            val headerRowHtml = headerM.groupValues[1]
+            if (weekdayHeaderRe.containsMatchIn(toPlain(headerRowHtml))) {
+                var thCol = 0
+                for (thM in Regex("<(td|th)[^>]*>([\\s\\S]*?)</\\1>").findAll(headerRowHtml)) {
+                    val plainTh = toPlain(thM.groupValues[2])
+                    for (d in 0 until 7) {
+                        if (plainTh.contains("星期${WEEKDAY_CHARS[d]}")) dayByCol[thCol] = d + 1
+                    }
+                    thCol++
+                }
+                break
             }
-            thCol++
         }
         if (dayByCol.isEmpty()) {
             for (c in 1..7) dayByCol[c] = c
@@ -224,7 +231,7 @@ object CourseFileParser {
 
         for (rowM in Regex("<tr[^>]*>([\\s\\S]*?)</tr>").findAll(table)) {
             val rowHtml = rowM.groupValues[1]
-            if (!rowHtml.contains("<th")) {
+            if (!weekdayHeaderRe.containsMatchIn(toPlain(rowHtml))) {
                 rowIdx++
                 var col = 0
                 val cellRe = Regex("<(td|th)([^>]*)>([\\s\\S]*?)</\\1>")
@@ -242,7 +249,7 @@ object CourseFileParser {
                     val periodM = Regex("第\\s*([一二三四五六七八九十]+)\\s*节").find(plain)
                     if (periodM != null) {
                         lastPeriod = cnToNumber(periodM.groupValues[1]) // 行头格：更新当前节次
-                    } else if (plain.isNotEmpty() && lastPeriod >= 1) {
+                    } else if (plain.trim().isNotEmpty() && lastPeriod >= 1) {
                         val dayDef = dayByCol[col]
                         val day = dayDef ?: col
                         val startSection = lastPeriod

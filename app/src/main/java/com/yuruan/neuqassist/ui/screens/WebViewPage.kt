@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -35,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,6 +88,16 @@ private fun isAllowedUrl(url: String): Boolean {
 }
 
 /**
+ * 判定 URL 是否已真正落地到教务主页 homeExt.action。
+ * 必须剥离 ? 查询串与 # 锚点并校验域名/路径，防止 CAS ?service=...homeExt.action 误触发。
+ */
+private fun isEamsHomeUrl(url: String): Boolean {
+    val pathOnly = url.substringBefore('?').substringBefore('#')
+    return Regex("^https?://jwxt\\.neuq\\.edu\\.cn/eams/homeExt\\.action(?:;|\$)", RegexOption.IGNORE_CASE)
+        .containsMatchIn(pathOnly)
+}
+
+/**
  * 深澜 WebVPN 网关的指纹跳转页路径。
  * 该页**没有任何可见内容**，全部逻辑是「FingerprintJS 算指纹 → location.href 跳转」，
  * 且不含 try/catch —— 脚本一旦执行失败，页面就永久白屏。
@@ -106,11 +118,11 @@ private const val FP_PATH = "/fingerprint"
  *  - setSupportMultipleWindows(false)：登录页里的 target=_blank / window.open
  *    改为在当前 WebView 打开，否则点击后「没反应」。
  */
-private fun configureWebView(web: WebView) {
+private fun configureWebView(web: WebView, databaseEnabled: Boolean = true) {
     web.settings.apply {
         javaScriptEnabled = true
         domStorageEnabled = true
-        databaseEnabled = true
+        this.databaseEnabled = databaseEnabled
         useWideViewPort = true
         loadWithOverviewMode = true
         setSupportZoom(true)
@@ -134,6 +146,20 @@ fun WebViewPage(
     var currentUrl by remember { mutableStateOf(url) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf("") }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef?.let { wv ->
+                try {
+                    wv.stopLoading()
+                    wv.destroy()
+                } catch (_: Exception) {
+                }
+            }
+            webViewRef = null
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFFF2F3F5))) {
         // 顶栏：返回 / 标题 / 浏览器打开
@@ -180,7 +206,18 @@ fun WebViewPage(
                     factory = { ctx ->
                         WebView(ctx).apply {
                             configureWebView(this)
+                            webViewRef = this
                             webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): Boolean {
+                                    val u = request?.url?.toString() ?: return false
+                                    if (isAllowedUrl(u)) return false
+                                    loadError = "已拦截非白名单链接"
+                                    return true
+                                }
+
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     loading = false
                                     loadError = ""
@@ -284,6 +321,21 @@ fun WebLoginPage(
     var stuck by remember { mutableStateOf(false) }
     /** WebView 实例引用：指纹预置完成后再触发加载 */
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var loginDetected by remember { mutableStateOf(false) }
+    var exiting by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef?.let { wv ->
+                try {
+                    wv.stopLoading()
+                    wv.destroy()
+                } catch (_: Exception) {
+                }
+            }
+            webViewRef = null
+        }
+    }
 
     // WebVPN 模式：先用原生请求预置指纹 Cookie，再加载登录页。
     // 不走网关的 /fingerprint JS 跳转页（该页无可见内容，脚本一失败就永久白屏）。
@@ -346,7 +398,12 @@ fun WebLoginPage(
                 fontSize = 20.sp,
                 color = TextPrimary,
                 modifier = Modifier
-                    .clickable { onBack() }
+                    .clickable {
+                        if (!exiting) {
+                            exiting = true
+                            onBack()
+                        }
+                    }
                     .padding(8.dp)
             )
             Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
@@ -356,23 +413,44 @@ fun WebLoginPage(
                     fontWeight = FontWeight.Medium,
                     color = TextPrimary
                 )
-                Text(text = "登录完成后点击右侧按钮", fontSize = 10.sp, color = TextTertiary)
+                Text(
+                    text = if (loginDetected) {
+                        "已检测到登录成功，请点击右上角「提取会话」"
+                    } else {
+                        "登录完成后点击右侧按钮"
+                    },
+                    fontSize = 10.sp,
+                    color = if (loginDetected) MaterialTheme.colorScheme.primary else TextTertiary
+                )
             }
             TextButton(onClick = {
-                val cookieUrl = if (mode == "webvpn") {
-                    "https://vpn.neuq.edu.cn/"
+                if (exiting) return@TextButton
+                val cm = CookieManager.getInstance()
+                cm.flush()
+                var cookies = if (mode == "webvpn") {
+                    cm.getCookie("https://vpn.neuq.edu.cn/") ?: ""
                 } else {
-                    "http://jwxt.neuq.edu.cn/"
+                    cm.getCookie("http://jwxt.neuq.edu.cn/eams/homeExt.action") ?: ""
                 }
-                val cookies = android.webkit.CookieManager.getInstance()
-                    .getCookie(cookieUrl) ?: ""
+                if (cookies.isEmpty() && mode == "eams") {
+                    cookies = cm.getCookie("http://jwxt.neuq.edu.cn/") ?: ""
+                }
+                if (cookies.isEmpty() && currentUrl.startsWith("http")) {
+                    cookies = cm.getCookie(currentUrl) ?: ""
+                }
                 if (cookies.isEmpty()) {
                     toastMsg = "未取到 Cookie，请确认已完成登录"
                 } else {
+                    exiting = true
                     onSessionExtracted(cookies)
                 }
             }) {
-                Text("提取会话", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "提取会话",
+                    fontSize = 13.sp,
+                    fontWeight = if (loginDetected) FontWeight.Bold else FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
 
@@ -398,7 +476,7 @@ fun WebLoginPage(
             AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
-                        configureWebView(this)
+                        configureWebView(this, databaseEnabled = false)
                         webViewRef = this
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(
@@ -428,12 +506,11 @@ fun WebLoginPage(
 
                                 loading = false
                                 errorText = ""
-                                // eams 模式可自动判定：登录成功后 eams 会重定向到 homeExt.action
-                                if (mode != "webvpn" && url?.contains("homeExt.action") == true) {
-                                    val cookieUrl = "http://jwxt.neuq.edu.cn/"
-                                    val cookies = CookieManager.getInstance()
-                                        .getCookie(cookieUrl) ?: ""
-                                    if (cookies.isNotEmpty()) onSessionExtracted(cookies)
+                                // eams 模式检测到重定向至 homeExt.action 时仅高亮提示并弹 Toast，不自动退栈
+                                val loadedUrl = url ?: ""
+                                if (mode != "webvpn" && !loginDetected && isEamsHomeUrl(loadedUrl)) {
+                                    loginDetected = true
+                                    toastMsg = "已检测到登录成功，请点击右上角「提取会话」"
                                 }
                             }
 
@@ -555,7 +632,10 @@ fun WebLoginPage(
 
     if (toastMsg.isNotEmpty()) {
         Box(
-            modifier = Modifier.fillMaxSize().padding(bottom = 60.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .padding(bottom = 60.dp),
             contentAlignment = Alignment.BottomCenter
         ) {
             Surface(color = Color(0xCC000000), shape = RoundedCornerShape(8.dp)) {
@@ -566,6 +646,10 @@ fun WebLoginPage(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                 )
             }
+        }
+        LaunchedEffect(toastMsg) {
+            kotlinx.coroutines.delay(2500)
+            toastMsg = ""
         }
     }
 }

@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="classroom_settings.xml" />
+    <exclude domain="sharedpref" path="neuq_secrets.xml" />
+    <exclude domain="sharedpref" path="neuq_secrets_fallback.xml" />
+    <exclude domain="file" path="cloud_cache.txt" />
+    <exclude domain="file" path="local_cache.txt" />
 </full-backup-content>

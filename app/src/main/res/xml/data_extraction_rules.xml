@@ -2,8 +2,16 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="classroom_settings.xml" />
+        <exclude domain="sharedpref" path="neuq_secrets.xml" />
+        <exclude domain="sharedpref" path="neuq_secrets_fallback.xml" />
+        <exclude domain="file" path="cloud_cache.txt" />
+        <exclude domain="file" path="local_cache.txt" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="classroom_settings.xml" />
+        <exclude domain="sharedpref" path="neuq_secrets.xml" />
+        <exclude domain="sharedpref" path="neuq_secrets_fallback.xml" />
+        <exclude domain="file" path="cloud_cache.txt" />
+        <exclude domain="file" path="local_cache.txt" />
     </device-transfer>
 </data-extraction-rules>

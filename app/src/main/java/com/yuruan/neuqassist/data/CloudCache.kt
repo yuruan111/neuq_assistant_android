@@ -1,7 +1,12 @@
 package com.yuruan.neuqassist.data
 
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 
 /**
  * 云端数据本地缓存 —— 移植自 HarmonyOS 端 service/CloudCache.ets
@@ -43,70 +48,169 @@ class CloudCacheData {
 object CloudCache {
     private const val HEADER = "NEUQ_CACHE_V1"
     private const val MAX_AGE_MS = 3600000L
+    private const val CLOUD_FILE = "cloud_cache.txt"
+    private const val LOCAL_FILE = "local_cache.txt"
 
-    /** 内存缓存：避免每次查询都重新读盘+解析（数千行数据） */
-    @Volatile
-    private var memoryCache: CloudCacheData? = null
+    /** 独立缓存桶：隔离云端（cloud_cache.txt）与本地一键更新（local_cache.txt）的内存、写锁与版本号 */
+    private class CacheBucket(val fileName: String) {
+        @Volatile
+        var memory: CloudCacheData? = null
+        val writeMutex = Mutex()
+        val revLock = Any()
+        var revision: Long = 0L
+    }
 
-    private fun cachePath(context: Context) = File(context.filesDir, "cloud_cache.txt")
+    private val cloudBucket = CacheBucket(CLOUD_FILE)
+    private val localBucket = CacheBucket(LOCAL_FILE)
+
+    private fun cachePath(context: Context, fileName: String) = File(context.filesDir, fileName)
 
     fun isFresh(data: CloudCacheData): Boolean =
         data.fetchedAt > 0 && (System.currentTimeMillis() - data.fetchedAt) < MAX_AGE_MS
 
-    // 说明：不设 invalidate() 之类的手动失效接口 —— 云端缓存与会话无关，
-    // 内存缓存由 save() 落盘时整体刷新、load() 进程内只读一次盘，生命周期已闭环。
+    // 说明：不设 invalidate() 之类的手动失效接口 —— 缓存与会话无关，
+    // 内存缓存由 save()/saveLocal() 落盘时整体刷新、load()/loadLocal() 进程内只读一次盘，生命周期已闭环。
 
+    /** 写入云端缓存（cloud_cache.txt），与本地一键更新缓存物理隔离 */
     suspend fun save(
         context: Context,
         updateTime: String,
         rooms: List<ProcessedClassroomData>,
         roomDays: List<Int>
-    ) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        try {
-            val sb = StringBuilder()
-            sb.append(HEADER).append('\n')
-            sb.append("updateTime=$updateTime").append('\n')
-            sb.append("fetchedAt=${System.currentTimeMillis()}").append('\n')
-            for (i in rooms.indices) {
-                val r = rooms[i]
-                sb.append("${roomDays[i]}|${r.timeSlot}|${r.building}|${r.name}").append('\n')
+    ) {
+        saveToBucket(cloudBucket, context, updateTime, rooms, roomDays, System.currentTimeMillis())
+    }
+
+    /** 读取云端缓存（cloud_cache.txt） */
+    suspend fun load(context: Context): CloudCacheData? = loadFromBucket(cloudBucket, context)
+
+    /** 写入本地一键更新缓存（local_cache.txt），不污染云端 cloud_cache.txt */
+    suspend fun saveLocal(context: Context, data: CloudCacheData) {
+        val ts = if (data.fetchedAt > 0) data.fetchedAt else System.currentTimeMillis()
+        if (data.fetchedAt <= 0) data.fetchedAt = ts
+        saveToBucket(localBucket, context, data.updateTime, data.rooms, data.roomDays, ts)
+    }
+
+    /** 写入本地一键更新缓存重载（与 save 参数风格一致） */
+    suspend fun saveLocal(
+        context: Context,
+        updateTime: String,
+        rooms: List<ProcessedClassroomData>,
+        roomDays: List<Int>
+    ) {
+        saveToBucket(localBucket, context, updateTime, rooms, roomDays, System.currentTimeMillis())
+    }
+
+    /** 读取本地一键更新缓存（local_cache.txt） */
+    suspend fun loadLocal(context: Context): CloudCacheData? = loadFromBucket(localBucket, context)
+
+    private suspend fun saveToBucket(
+        bucket: CacheBucket,
+        context: Context,
+        updateTime: String,
+        rooms: List<ProcessedClassroomData>,
+        roomDays: List<Int>,
+        fetchedAt: Long
+    ) {
+        val roomsCopy = rooms.toMutableList()
+        val daysCopy = roomDays.toMutableList()
+        bucket.writeMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val saved = writeAtomic(
+                    cachePath(context, bucket.fileName),
+                    updateTime,
+                    roomsCopy,
+                    daysCopy,
+                    fetchedAt
+                )
+                if (saved != null) {
+                    synchronized(bucket.revLock) {
+                        bucket.revision++
+                        bucket.memory = saved
+                    }
+                }
             }
-            cachePath(context).writeText(sb.toString(), Charsets.UTF_8)
-            // 同步刷新内存缓存，后续查询直接命中
-            val data = CloudCacheData().apply {
-                this.updateTime = updateTime
-                fetchedAt = System.currentTimeMillis()
-                this.rooms = rooms.toMutableList()
-                this.roomDays = roomDays.toMutableList()
-                buildIndex()
-            }
-            memoryCache = data
-        } catch (e: Exception) {
-            Logger.warn("云端缓存写入失败: ${e.message}")
         }
     }
 
-    suspend fun load(context: Context): CloudCacheData? =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            // 内存命中即返回：进程内只读一次盘。save() 落盘时会同步刷新内存缓存，
-            // 两者始终一致，无需 TTL 过期重读
-            memoryCache?.let { return@withContext it }
-            try {
-                val f = cachePath(context)
-                if (!f.exists() || f.length() <= 0) return@withContext null
-                val content = f.readText(Charsets.UTF_8)
-                val data = fromText(content)
-                memoryCache = data
-                data
-            } catch (e: Exception) {
-                Logger.warn("云端缓存读取失败: ${e.message}")
-                null
+    private suspend fun loadFromBucket(bucket: CacheBucket, context: Context): CloudCacheData? =
+        withContext(Dispatchers.IO) {
+            // 内存命中即返回：进程内只读一次盘。save/saveLocal 落盘时会同步刷新内存缓存，
+            // 并通过版本号保护防止并发旧读覆盖新写
+            bucket.memory?.let { return@withContext it }
+            val rev = synchronized(bucket.revLock) {
+                bucket.memory?.let { return@withContext it }
+                bucket.revision
+            }
+            val data = readFromDisk(cachePath(context, bucket.fileName))
+            synchronized(bucket.revLock) {
+                if (bucket.memory != null) return@withContext bucket.memory
+                if (data != null && bucket.revision == rev) {
+                    bucket.memory = data
+                }
+                bucket.memory ?: data
             }
         }
 
+    /** 写临时文件后原子 rename，避免并发读取或异常中断导致缓存文件截断损坏 */
+    private fun writeAtomic(
+        target: File,
+        updateTime: String,
+        rooms: MutableList<ProcessedClassroomData>,
+        roomDays: MutableList<Int>,
+        fetchedAt: Long
+    ): CloudCacheData? {
+        val tmpFile = File(target.parentFile, "${target.name}.tmp")
+        return try {
+            val sb = StringBuilder()
+            sb.append(HEADER).append('\n')
+            sb.append("updateTime=").append(updateTime).append('\n')
+            sb.append("fetchedAt=").append(fetchedAt).append('\n')
+            val count = minOf(rooms.size, roomDays.size)
+            for (i in 0 until count) {
+                val r = rooms[i]
+                sb.append("${roomDays[i]}|${r.timeSlot}|${r.building}|${r.name}").append('\n')
+            }
+            target.parentFile?.mkdirs()
+            tmpFile.writeText(sb.toString(), Charsets.UTF_8)
+            if (!tmpFile.renameTo(target)) {
+                if (target.exists()) target.delete()
+                if (!tmpFile.renameTo(target)) {
+                    throw IOException("原子重命名失败: ${tmpFile.name} -> ${target.name}")
+                }
+            }
+            // 同步构造内存缓存对象，保持 fetchedAt 与落盘一致
+            CloudCacheData().apply {
+                this.updateTime = updateTime
+                this.fetchedAt = fetchedAt
+                this.rooms = rooms
+                this.roomDays = roomDays
+                buildIndex()
+            }
+        } catch (e: Exception) {
+            Logger.warn("缓存写入失败(${target.name}): ${e.message}")
+            try {
+                if (tmpFile.exists()) tmpFile.delete()
+            } catch (_: Exception) {
+            }
+            null
+        }
+    }
+
+    private fun readFromDisk(file: File): CloudCacheData? = try {
+        if (!file.exists() || file.length() <= 0) {
+            null
+        } else {
+            fromText(file.readText(Charsets.UTF_8))
+        }
+    } catch (e: Exception) {
+        Logger.warn("缓存读取失败(${file.name}): ${e.message}")
+        null
+    }
+
     /** 从行文本解析（本地缓存文件与自建服务器接口共用此格式） */
     fun fromText(content: String): CloudCacheData? {
-        val lines = content.split("\n")
+        val lines = content.replace("\r\n", "\n").split("\n")
         if (lines.size < 3 || lines[0] != HEADER) return null
 
         val data = CloudCacheData()
