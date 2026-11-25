@@ -49,6 +49,11 @@ class WebvpnSession(
         loggedIn = false
     }
 
+    /** 标记会话已在外部（如网页登录 Cookie 注入）建立，避免被前置预检覆写 */
+    fun markLoggedIn() {
+        loggedIn = true
+    }
+
     companion object {
         /** 检测页面是否为 WebVPN 登录页 */
         fun isLoginPage(html: String): Boolean =

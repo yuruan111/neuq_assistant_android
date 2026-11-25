@@ -298,6 +298,8 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
     private val http = HttpService().apply { timeoutMs = 45000 }
     private val webvpn: WebvpnSession
     private var loggedIn = false
+    private var webGet: (suspend (String) -> String)? = null
+    private var webPost: (suspend (String, String) -> String)? = null
 
     init {
         val wc = WebvpnConfig().apply {
@@ -310,10 +312,22 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
         webvpn = WebvpnSession(http, wc)
     }
 
+    /** 注入隐形 WebView 同源传输实现（复用 WebLogin 完整 Cookie 域与 CAS 会话） */
+    fun setWebTransport(
+        getPage: (suspend (String) -> String)?,
+        postRelative: (suspend (String, String) -> String)?
+    ) {
+        webGet = getPage
+        webPost = postRelative
+    }
+
     /** 注入网页登录会话 Cookie（跳过账号密码登录） */
     fun applyWebSession(cookieHeader: String) {
         http.cookieStore.clear()
         http.cookieStore.importFromHeader(cookieHeader)
+        if (config.webvpnEnabled) {
+            webvpn.markLoggedIn()
+        }
         loggedIn = true
     }
 
@@ -347,17 +361,28 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
         val url = webvpn.proxiedAsync(
             "${config.baseUrl}courseTableForStd.action?&sf_request_type=ajax"
         )
+        val getter = webGet
+        if (getter != null) {
+            val body = getter(url)
+            if (body.isEmpty() || isSessionPage(body)) {
+                loggedIn = false
+                throw AppError.loginFailed("教务会话已过期，请点击下方「去网页登录」重新登录")
+            }
+            return body
+        }
         val resp = http.get(url)
         if (isSessionPage(resp.body)) {
             loggedIn = false
-            throw AppError.loginFailed("教务会话已过期，请重新登录后重试")
+            throw AppError.loginFailed("教务会话已过期，请点击下方「去网页登录」重新登录")
         }
         return resp.body
     }
 
     /** 第一步：拉取可选学期列表 */
     suspend fun fetchTerms(): List<TermInfo> {
-        ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
+        if (webGet == null) {
+            ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
+        }
         val html = getEntryHtml()
         val idsM = IDS_RE.find(html)
         val tagM = SEMESTER_TAG_RE.find(html)
@@ -365,47 +390,71 @@ class ScheduleService(private val config: ClassroomQueryConfig) {
             throw AppError.process("未能识别学号或学期组件，请确认已登录教务")
         }
 
-        val url = webvpn.proxiedAsync("${config.baseUrl}dataQuery.action?sf_request_type=ajax")
-        val params = listOf(
-            ParamPair("tagId", tagM.groupValues[1]),
-            ParamPair("dataType", "semesterCalendar")
-        )
-        val resp = http.postForm(url, params)
-        val terms = parseLooseSemesters(resp.body)
+        val poster = webPost
+        val respBody = if (poster != null) {
+            poster(
+                "dataQuery.action?sf_request_type=ajax",
+                "tagId=${java.net.URLEncoder.encode(tagM.groupValues[1], "UTF-8")}&dataType=semesterCalendar"
+            )
+        } else {
+            val url = webvpn.proxiedAsync("${config.baseUrl}dataQuery.action?sf_request_type=ajax")
+            val params = listOf(
+                ParamPair("tagId", tagM.groupValues[1]),
+                ParamPair("dataType", "semesterCalendar")
+            )
+            http.postForm(url, params).body
+        }
+        if (isSessionPage(respBody)) {
+            loggedIn = false
+            throw AppError.loginFailed("教务会话已过期，请点击下方「去网页登录」重新登录")
+        }
+        val terms = parseLooseSemesters(respBody)
         if (terms.isEmpty()) {
-            throw AppError.process("学期列表为空（响应 ${resp.body.length} 字节）")
+            throw AppError.process("学期列表为空（响应 ${respBody.length} 字节）")
         }
         return terms
     }
 
     /** 第二步：按学期拉取课表并解析 */
     suspend fun fetchSchedule(semesterId: String, termName: String): ImportResult {
-        ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
+        if (webGet == null) {
+            ensureAccess(config.username.isNotEmpty() && config.password.isNotEmpty())
+        }
         val html = getEntryHtml()
         val idsM = IDS_RE.find(html)
             ?: throw AppError.process("未能识别学号，请确认已登录")
 
-        val url = webvpn.proxiedAsync(
-            "${config.baseUrl}courseTableForStd!courseTable.action?sf_request_type=ajax"
-        )
-        val params = listOf(
-            ParamPair("ignoreHead", "1"),
-            ParamPair("setting.kind", "std"),
-            ParamPair("startWeek", ""),
-            ParamPair("semester.id", semesterId),
-            ParamPair("ids", idsM.groupValues[1])
-        )
-        val resp = http.postForm(url, params)
-        if (isSessionPage(resp.body)) {
+        val poster = webPost
+        val respBody = if (poster != null) {
+            poster(
+                "courseTableForStd!courseTable.action?sf_request_type=ajax",
+                "ignoreHead=1&setting.kind=std&startWeek=&" +
+                    "semester.id=${java.net.URLEncoder.encode(semesterId, "UTF-8")}&" +
+                    "ids=${java.net.URLEncoder.encode(idsM.groupValues[1], "UTF-8")}"
+            )
+        } else {
+            val url = webvpn.proxiedAsync(
+                "${config.baseUrl}courseTableForStd!courseTable.action?sf_request_type=ajax"
+            )
+            val params = listOf(
+                ParamPair("ignoreHead", "1"),
+                ParamPair("setting.kind", "std"),
+                ParamPair("startWeek", ""),
+                ParamPair("semester.id", semesterId),
+                ParamPair("ids", idsM.groupValues[1])
+            )
+            http.postForm(url, params).body
+        }
+        if (isSessionPage(respBody)) {
             loggedIn = false
-            throw AppError.loginFailed("教务会话已过期，请重新登录后重试")
+            throw AppError.loginFailed("教务会话已过期，请点击下方「去网页登录」重新登录")
         }
 
-        val courses = parseTaskActivities(resp.body)
+        val courses = parseTaskActivities(respBody)
         if (courses.isEmpty()) {
-            val count = Regex("TaskActivity").findAll(resp.body).count()
+            val count = Regex("TaskActivity").findAll(respBody).count()
             throw AppError.process(
-                "未解析到课程（响应 ${resp.body.length} 字节，" +
+                "未解析到课程（响应 ${respBody.length} 字节，" +
                     "${if (count > 0) "含 TaskActivity $count 处" else "无 TaskActivity"}）。" +
                     "教务可能已改版，请稍后重试或反馈"
             )

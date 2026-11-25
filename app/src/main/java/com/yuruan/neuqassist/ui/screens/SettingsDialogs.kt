@@ -405,6 +405,7 @@ fun ImportScheduleDialog(
     errorText: String,
     terms: List<com.yuruan.neuqassist.data.TermInfo>,
     onStartWebImport: () -> Unit,
+    onWebLogin: () -> Unit,
     onPickTerm: (String) -> Unit,
     onPickFile: () -> Unit,
     onReload: () -> Unit,
@@ -422,7 +423,7 @@ fun ImportScheduleDialog(
             ) {
                 HelpText(
                     text = "在教务页面同源上下文中直接读取数据：无需输入账号密码，" +
-                        "复用「小秦帮 → 教务登录」的会话。导入会覆盖当前课表与作息时间。"
+                        "复用「小秦帮 → 教务/WebVPN 登录」的会话。导入会覆盖当前课表与作息时间。"
                 )
                 if (errorText.isNotEmpty()) {
                     Text(errorText, fontSize = 11.sp, color = com.yuruan.neuqassist.ui.theme.ErrorRedDeep)
@@ -431,45 +432,76 @@ fun ImportScheduleDialog(
                     com.yuruan.neuqassist.ui.LoadingRow(
                         text = statusText.ifEmpty { "处理中…" }
                     )
-                } else if (terms.isEmpty()) {
-                    Surface(
-                        onClick = onStartWebImport,
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) { Text("启动网页通道", fontSize = 14.sp, color = androidx.compose.ui.graphics.Color.White) }
-                    }
-                    if (!sessionReady) {
-                        HelpText(text = "尚未登录：请先到「小秦帮 → 教务登录」完成一次网页登录。")
-                    }
                 } else {
-                    Text(
-                        statusText.ifEmpty { "请选择要导入的学期：" },
-                        fontSize = 12.sp,
-                        color = TextSecondary
-                    )
-                    terms.forEach { t ->
+                    if (terms.isEmpty()) {
                         Surface(
-                            onClick = { onPickTerm(t.id) },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = com.yuruan.neuqassist.ui.theme.SurfaceGrey,
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
+                            onClick = onStartWebImport,
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) { Text("启动网页通道", fontSize = 14.sp, color = androidx.compose.ui.graphics.Color.White) }
+                        }
+                        if (!sessionReady) {
+                            HelpText(text = "尚未登录：请先完成网页登录（校外默认走 WebVPN，可在页内一键切换直连）。")
+                        }
+                    } else {
+                        Text(
+                            statusText.ifEmpty { "请选择要导入的学期：" },
+                            fontSize = 12.sp,
+                            color = TextSecondary
+                        )
+                        terms.forEach { t ->
+                            Surface(
+                                onClick = { onPickTerm(t.id) },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = com.yuruan.neuqassist.ui.theme.SurfaceGrey,
+                                shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
                             ) {
-                                Text(t.name, fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
-                                Text("导入", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(t.name, fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+                                    Text("导入", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         }
+                        TextButton(onClick = onReload) { Text("重新检测") }
                     }
-                    TextButton(onClick = onReload) { Text("重新检测") }
+
+                    if (!sessionReady || errorText.contains("过期") || errorText.contains("登录")) {
+                        Surface(
+                            onClick = onWebLogin,
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            color = androidx.compose.ui.graphics.Color(0x14007DFF),
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.primary
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "去网页登录（WebVPN / 教务）",
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    } else {
+                        TextButton(onClick = onWebLogin) {
+                            Text("切换 / 重新网页登录")
+                        }
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))

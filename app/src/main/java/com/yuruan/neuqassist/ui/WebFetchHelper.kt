@@ -1,9 +1,12 @@
 package com.yuruan.neuqassist.ui
 
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.json.JSONObject
 import kotlin.coroutines.resume
 
 /**
@@ -37,6 +40,9 @@ object WebFetchHelper {
                 settings.domStorageEnabled = true
                 settings.databaseEnabled = false
                 settings.mediaPlaybackRequiresUserGesture = true
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                 // 隐形：不绘制、不参与交互
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                 webViewClient = object : WebViewClient() {
@@ -87,8 +93,16 @@ object WebFetchHelper {
             var done = false
             lateinit var timeoutRunnable: Runnable
             val client = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
+                override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                     if (done) return
+                    if (loadedUrl?.contains("/fingerprint") == true) {
+                        val fp = com.yuruan.neuqassist.net.WebvpnCrypto.fakeFingerprint()
+                        view?.evaluateJavascript(
+                            "window.location.replace('/set-fingerprint?fingerprint=$fp');",
+                            null
+                        )
+                        return
+                    }
                     done = true
                     mainHandler.removeCallbacks(timeoutRunnable)
                     if (cont.isActive) cont.resume(true)
@@ -169,6 +183,32 @@ object WebFetchHelper {
             off = end
         }
         return full.toString()
+    }
+
+    /**
+     * 在当前同源网页上下文内发起同步 XHR POST 并分块取回响应文本。
+     * 用于复用 WebView 完整 Cookie 域与 CAS SSO 会话。
+     */
+    suspend fun postXhr(relativePath: String, formBody: String): String {
+        if (webView == null) return ""
+        val pathJs = JSONObject.quote(relativePath)
+        val bodyJs = JSONObject.quote(formBody)
+        val js = "(function(){" +
+            "var x=new XMLHttpRequest();" +
+            "x.open('POST',$pathJs,false);" +
+            "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');" +
+            "x.send($bodyJs);" +
+            "window.__nq_xhr = x.responseText || '';" +
+            "return x.status + '|' + String(window.__nq_xhr.length);" +
+            "})()"
+        val meta = runJs(js).trim().trim('"')
+        val parts = meta.split("|")
+        val status = parts.getOrNull(0)?.toIntOrNull()
+        val total = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        if (status == null || status >= 400 || total <= 0) {
+            throw com.yuruan.neuqassist.data.AppError.fetch("教务网页请求异常（返回: $meta），请重新网页登录")
+        }
+        return readJsString("window.__nq_xhr", total)
     }
 
     /**

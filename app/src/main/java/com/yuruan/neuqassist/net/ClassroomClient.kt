@@ -48,6 +48,9 @@ class ClassroomClient(private val config: ClassroomQueryConfig) {
     fun applyWebSession(cookieHeader: String) {
         client.cookieStore.clear()
         client.cookieStore.importFromHeader(cookieHeader)
+        if (config.webvpnEnabled) {
+            webvpn.markLoggedIn()
+        }
         Logger.info("已注入网页会话 Cookie，长度: ${cookieHeader.length}")
     }
 

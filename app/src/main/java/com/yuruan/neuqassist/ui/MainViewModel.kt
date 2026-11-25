@@ -632,6 +632,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         service = null
         webChannelFailed = false
         errorMsg = ""
+        importError = ""
+        terms = emptyList()
         sessionModeLabel = if (mode == "webvpn") "已登录（WebVPN 会话）" else "已登录（教务直连会话）"
     }
 
@@ -792,6 +794,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun buildScheduleService(): ScheduleService {
+        val cfg = buildConfig()
+        if (sessionMode.isNotEmpty()) {
+            cfg.webvpnEnabled = sessionMode == "webvpn"
+        }
+        val svc = ScheduleService(cfg)
+        if (sessionCookies.isNotEmpty()) {
+            svc.applyWebSession(sessionCookies)
+            svc.setWebTransport(
+                getPage = { u -> WebFetchHelper.fetch(context, u) },
+                postRelative = { rel, body -> WebFetchHelper.postXhr(rel, body) }
+            )
+        }
+        return svc
+    }
+
     /** 网页通道导入课表：走 WebView 同源注入（对应 openEngine + runTerms + pickTerm） */
     fun importScheduleViaWeb(semesterId: String, onDone: (Boolean, String) -> Unit) {
         importBusy = true
@@ -799,8 +817,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         importStatus = "拉取课表并解析…"
         viewModelScope.launch {
             try {
-                val svc = ScheduleService(buildConfig())
-                if (sessionCookies.isNotEmpty()) svc.applyWebSession(sessionCookies)
+                val svc = buildScheduleService()
                 val termName = terms.firstOrNull { it.id == semesterId }?.name ?: ""
                 val r = svc.fetchSchedule(semesterId, termName)
                 val items = r.courses.mapIndexed { idx, c ->
@@ -838,8 +855,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         importStatus = "获取学期列表…"
         viewModelScope.launch {
             try {
-                val svc = ScheduleService(buildConfig())
-                if (sessionCookies.isNotEmpty()) svc.applyWebSession(sessionCookies)
+                val svc = buildScheduleService()
                 terms = svc.fetchTerms()
                 importStatus = "共 ${terms.size} 个学期，请选择要导入的学期"
                 onDone(true, "")

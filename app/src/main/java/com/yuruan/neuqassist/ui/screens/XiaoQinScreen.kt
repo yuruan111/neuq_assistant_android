@@ -158,11 +158,7 @@ fun XiaoQinScreen(
                         )
                     }
                     Text(
-                        text = if (sessionModeLabel == "未登录") {
-                            if (vm.useWebvpn) "WebVPN登录" else "教务登录"
-                        } else {
-                            "刷新会话"
-                        },
+                        text = if (sessionModeLabel == "未登录") "WebVPN登录" else "刷新会话",
                         fontSize = 13.sp,
                         color = Color.White,
                         modifier = Modifier

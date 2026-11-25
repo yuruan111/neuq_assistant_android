@@ -363,14 +363,15 @@ fun WebViewPage(
 @Composable
 fun WebLoginPage(
     mode: String,
-    onSessionExtracted: (String) -> Unit,
+    onSessionExtracted: (String, String) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    var activeMode by remember(mode) { mutableStateOf(mode) }
     // 2026-10 起教务系统走统一身份认证（CAS）：直接加载 CAS 登录页
     // （service 指向教务主页），登录成功后 CAS 会 302 回教务系统完成会话建立。
     // 若仍加载旧的 loginExt.action，用户填完表单会被 302 弹到 CAS 页，造成「跳到别的页」。
-    val loginUrl = if (mode == "webvpn") {
+    val loginUrl = if (activeMode == "webvpn") {
         "https://vpn.neuq.edu.cn/login?cas_login=true"
     } else {
         com.yuruan.neuqassist.net.CasAuth.EAMS_CAS_LOGIN_URL
@@ -413,8 +414,13 @@ fun WebLoginPage(
 
     // WebVPN 模式：先用原生请求预置指纹 Cookie，再加载登录页。
     // 不走网关的 /fingerprint JS 跳转页（该页无可见内容，脚本一失败就永久白屏）。
-    LaunchedEffect(Unit) {
-        if (mode == "webvpn") {
+    LaunchedEffect(activeMode) {
+        currentUrl = ""
+        loading = true
+        stuck = false
+        errorText = ""
+        loginDetected = false
+        if (activeMode == "webvpn") {
             WebvpnFingerprint.prime()
         }
         // 等 AndroidView 完成 WebView 创建
@@ -423,6 +429,7 @@ fun WebLoginPage(
             kotlinx.coroutines.delay(20)
         }
         webViewRef?.let { wv ->
+            wv.stopLoading()
             wv.loadUrl(loginUrl)
         } ?: run {
             errorText = "WebView 初始化失败"
@@ -482,7 +489,7 @@ fun WebLoginPage(
             )
             Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
                 Text(
-                    text = if (mode == "webvpn") "WebVPN 登录" else "教务系统登录",
+                    text = if (activeMode == "webvpn") "WebVPN 登录" else "教务系统登录",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Medium,
                     color = TextPrimary
@@ -514,12 +521,12 @@ fun WebLoginPage(
                 if (exiting) return@TextButton
                 val cm = CookieManager.getInstance()
                 cm.flush()
-                var cookies = if (mode == "webvpn") {
+                var cookies = if (activeMode == "webvpn") {
                     cm.getCookie("https://vpn.neuq.edu.cn/") ?: ""
                 } else {
                     cm.getCookie("http://jwxt.neuq.edu.cn/eams/homeExt.action") ?: ""
                 }
-                if (cookies.isEmpty() && mode == "eams") {
+                if (cookies.isEmpty() && activeMode == "eams") {
                     cookies = cm.getCookie("http://jwxt.neuq.edu.cn/") ?: ""
                 }
                 if (cookies.isEmpty() && currentUrl.startsWith("http")) {
@@ -529,7 +536,7 @@ fun WebLoginPage(
                     toastMsg = "未取到 Cookie，请确认已完成登录"
                 } else {
                     exiting = true
-                    onSessionExtracted(cookies)
+                    onSessionExtracted(activeMode, cookies)
                 }
             }) {
                 Text(
@@ -541,13 +548,35 @@ fun WebLoginPage(
             }
         }
 
-        Text(
-            text = currentUrl,
-            fontSize = 9.sp,
-            color = TextTertiary,
-            maxLines = 1,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = currentUrl,
+                fontSize = 9.sp,
+                color = TextTertiary,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = if (activeMode == "webvpn") {
+                    "当前：WebVPN（点此切校园网直连）"
+                } else {
+                    "当前：校园网直连（点此切WebVPN）"
+                },
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .clickable {
+                        activeMode = if (activeMode == "webvpn") "eams" else "webvpn"
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            )
+        }
 
         // 底部补 navigationBars inset：登录页的提交按钮可能位于网页最下方，
         // 被导航栏压住会导致用户无法完成登录，故网页区不下沉到导航栏之下。
@@ -610,7 +639,7 @@ fun WebLoginPage(
                                 errorText = ""
                                 // eams 模式检测到重定向至 homeExt.action 时仅高亮提示并弹 Toast，不自动退栈
                                 val loadedUrl = url ?: ""
-                                if (mode != "webvpn" && !loginDetected && isEamsHomeUrl(loadedUrl)) {
+                                if (activeMode != "webvpn" && !loginDetected && isEamsHomeUrl(loadedUrl)) {
                                     loginDetected = true
                                     toastMsg = "已检测到登录成功，请点击右上角「提取会话」"
                                 }
@@ -647,9 +676,16 @@ fun WebLoginPage(
                                 error: SslError?
                             ) {
                                 handler?.cancel()
-                                loading = false
-                                errorText = "SSL 证书校验未通过（${error?.primaryError ?: -1}）：" +
-                                    "${error?.url ?: currentUrl}"
+                                val errUrl = error?.url ?: ""
+                                val curHost = runCatching { Uri.parse(currentUrl).host }.getOrNull() ?: ""
+                                val errHost = runCatching { Uri.parse(errUrl).host }.getOrNull() ?: ""
+                                if (errUrl.isEmpty() || currentUrl.isEmpty() ||
+                                    (errHost.isNotEmpty() && errHost.equals(curHost, ignoreCase = true))
+                                ) {
+                                    loading = false
+                                    errorText = "SSL 证书校验未通过（${error?.primaryError ?: -1}）：" +
+                                        errUrl.ifEmpty { currentUrl }
+                                }
                             }
                         }
                         // loadUrl 由 LaunchedEffect 在指纹预置完成后调用（见上方）
@@ -733,7 +769,7 @@ fun WebLoginPage(
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (mode == "webvpn") {
+                            text = if (activeMode == "webvpn") {
                                 "正在打开 WebVPN 登录页…"
                             } else {
                                 "正在打开教务登录页…"

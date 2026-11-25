@@ -229,8 +229,8 @@ fun MainScreen(
     if (showWebLogin) {
         WebLoginPage(
             mode = webLoginMode,
-            onSessionExtracted = { cookies ->
-                vm.onWebLoginSuccess(webLoginMode, cookies)
+            onSessionExtracted = { extractedMode, cookies ->
+                vm.onWebLoginSuccess(extractedMode, cookies)
                 showWebLogin = false
                 toastMsg = "登录会话已获取，可直接查询"
                 if (showImport && !vm.importBusy) {
@@ -378,11 +378,7 @@ fun MainScreen(
                         sessionModeLabel = vm.sessionModeLabel,
                         vm = vm,
                         onWebLogin = {
-                            webLoginMode = when (vm.sessionMode) {
-                                "eams" -> "eams"
-                                "webvpn" -> "webvpn"
-                                else -> if (vm.useWebvpn) "webvpn" else "eams"
-                            }
+                            webLoginMode = if (vm.sessionMode == "eams") "eams" else "webvpn"
                             showWebLogin = true
                         },
                         onLogout = { vm.logout() },
@@ -442,12 +438,19 @@ fun MainScreen(
                 errorText = vm.importError,
                 terms = vm.terms,
                 onStartWebImport = {
-                    if (vm.sessionCookies.isEmpty()) {
-                        webLoginMode = if (vm.useWebvpn) "webvpn" else "eams"
+                    if (vm.sessionCookies.isEmpty() ||
+                        vm.importError.contains("过期") ||
+                        vm.importError.contains("登录")
+                    ) {
+                        webLoginMode = if (vm.sessionMode == "eams") "eams" else "webvpn"
                         showWebLogin = true
                     } else {
                         vm.fetchTerms { _, _ -> }
                     }
+                },
+                onWebLogin = {
+                    webLoginMode = if (vm.sessionMode == "eams") "eams" else "webvpn"
+                    showWebLogin = true
                 },
                 onPickTerm = { id ->
                     vm.importScheduleViaWeb(id) { ok, msg ->
