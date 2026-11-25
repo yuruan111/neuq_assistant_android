@@ -33,9 +33,12 @@ fun htmlSnippet(html: String): String {
     return "title='$title' 正文='$text'"
 }
 
-/** 去除 HTML 标签并压缩空白 */
+/** 去除 HTML 标签并压缩空白（先剔除 script/style 正文，避免诊断串被脚本淹没） */
 fun stripTags(html: String): String =
-    html.replace(Regex("<[^>]*>"), " ").split(Regex("\\s+")).filter { it.isNotEmpty() }
+    html.replace(Regex("<script[\\s\\S]*?</script>", RegexOption.IGNORE_CASE), " ")
+        .replace(Regex("<style[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), " ")
+        .replace(Regex("<[^>]*>"), " ")
+        .split(Regex("\\s+")).filter { it.isNotEmpty() }
         .joinToString(" ")
 
 /** 解码常见 HTML 实体 */
@@ -59,52 +62,111 @@ private fun cellText(cellHtml: String): String =
  * 表格存在但没有数据行，才是合法的空结果。
  */
 fun parseClassroomHtml(html: String): List<com.yuruan.neuqassist.data.RawClassroomData> {
-    // 定位 gridtable 表格（兼容单/双引号属性）
-    val tableMatch = Regex(
-        "<table[^>]*class=[\"'][^\"']*gridtable[^\"']*[\"'][^>]*>([\\s\\S]*?)</table>",
-        RegexOption.IGNORE_CASE
-    ).find(html) ?: throw AppError.fetch(
+    val tableHtml = extractGridTableHtml(html) ?: throw AppError.fetch(
         "响应中未找到结果表格（可能是登录页或错误页），响应特征: ${htmlSnippet(html)}"
     )
-    val tableHtml = tableMatch.groupValues[1]
 
-    // 表头（thead th 或第一行 th）
-    val headers = mutableListOf<String>()
-    val thRe = Regex("<th[^>]*>([\\s\\S]*?)</th>", RegexOption.IGNORE_CASE)
-    thRe.findAll(tableHtml).forEach { headers.add(cellText(it.groupValues[1])) }
-
-    // 数据行（tbody tr / 所有含 td 的 tr）
     val results = mutableListOf<com.yuruan.neuqassist.data.RawClassroomData>()
-    val trRe = Regex("<tr[^>]*>([\\s\\S]*?)</tr>", RegexOption.IGNORE_CASE)
-    for (trMatch in trRe.findAll(tableHtml)) {
-        val rowHtml = trMatch.groupValues[1]
-        if (!rowHtml.contains("<td")) continue
+    var headerNames: List<String> = emptyList()
+    var headerSeen = false
+    val rowRe = Regex("<tr\\b[^>]*>([\\s\\S]*?)</tr>", RegexOption.IGNORE_CASE)
 
-        val cells = mutableListOf<String>()
-        val tdRe = Regex("<td[^>]*>([\\s\\S]*?)</td>", RegexOption.IGNORE_CASE)
-        tdRe.findAll(rowHtml).forEach { cells.add(cellText(it.groupValues[1])) }
+    for (rowMatch in rowRe.findAll(tableHtml)) {
+        val rowHtml = rowMatch.groupValues[1]
+        val thCells = extractCells(rowHtml, "th")
+        if (thCells.isNotEmpty()) {
+            // 第一行 th 视为表头（后续 th 行忽略，避免表头被当数据）
+            if (!headerSeen) {
+                headerNames = thCells
+                headerSeen = true
+            }
+            continue
+        }
 
-        if (cells.isNotEmpty()) {
-            val item = com.yuruan.neuqassist.data.RawClassroomData(
-                building = pickHeader(headers, 0, cells[0], "教学楼") ?: "",
-                name = pickHeader(headers, 1, cells.getOrNull(1) ?: "", "名称") ?: "",
-                capacity = pickHeader(headers, 2, cells.getOrNull(2) ?: "", "容量")
-                    ?.let { if (it.isEmpty()) "0" else it } ?: "",
-                equipmentConfig = pickHeader(headers, 3, cells.getOrNull(3) ?: "", "教室设备配置")
-                    ?: ""
+        val tdCells = extractCells(rowHtml, "td")
+        if (tdCells.isEmpty()) continue
+        // 个别页面表头用 td 书写：按已知列名识别，避免把表头当数据
+        if (!headerSeen && looksLikeHeaderRow(tdCells)) {
+            headerNames = tdCells
+            headerSeen = true
+            continue
+        }
+
+        var building = ""
+        var name = ""
+        var rawCapacity = ""
+        var equipment = ""
+        if (headerSeen) {
+            // 按表头名映射字段：不依赖列序，多余列（序号/操作等）自动忽略
+            val limit = minOf(headerNames.size, tdCells.size)
+            for (c in 0 until limit) {
+                when (mapHeaderNameToField(headerNames[c])) {
+                    "building" -> building = tdCells[c]
+                    "name" -> name = tdCells[c]
+                    "capacity" -> rawCapacity = tdCells[c]
+                    "equipmentConfig" -> equipment = tdCells[c]
+                }
+            }
+        } else {
+            // 无表头时按固定列序（教学楼/名称/容量/教室设备配置）取值，缺列或多余列跳过
+            building = tdCells.getOrElse(0) { "" }
+            name = tdCells.getOrElse(1) { "" }
+            rawCapacity = tdCells.getOrElse(2) { "" }
+            equipment = tdCells.getOrElse(3) { "" }
+        }
+
+        val meaningful = building.isNotEmpty() || name.isNotEmpty() ||
+            rawCapacity.isNotEmpty() || equipment.isNotEmpty()
+        val capacity = if (rawCapacity.isEmpty()) "0" else rawCapacity
+        if (meaningful) {
+            results.add(
+                com.yuruan.neuqassist.data.RawClassroomData(
+                    building = building,
+                    name = name,
+                    capacity = capacity,
+                    equipmentConfig = equipment
+                )
             )
-            results.add(item)
         }
     }
 
     return results
 }
 
-/** 按表头名取值：key 匹配返回该列文本，否则返回 null */
-private fun pickHeader(headers: List<String>, col: Int, value: String, key: String): String? {
-    val headerKey = if (col < headers.size) headers[col] else "column${col + 1}"
-    return if (headerKey == key) value else null
+/** 定位 class 含 gridtable 的第一个表格，返回其内部 HTML；找不到返回 null */
+private fun extractGridTableHtml(html: String): String? {
+    val openRe = Regex("<table\\b[^>]*>", RegexOption.IGNORE_CASE)
+    for (m in openRe.findAll(html)) {
+        if (m.value.contains("gridtable", ignoreCase = true)) {
+            val start = m.range.last + 1
+            val close = html.indexOf("</table>", start, ignoreCase = true)
+            return if (close < 0) html.substring(start) else html.substring(start, close)
+        }
+    }
+    return null
 }
+
+/** 抽取一行中指定标签（"td" 或 "th"）的单元格文本，已去标签压缩空白 */
+private fun extractCells(rowHtml: String, tag: String): List<String> {
+    val re = Regex("<$tag\\b[^>]*>([\\s\\S]*?)</$tag>", RegexOption.IGNORE_CASE)
+    return re.findAll(rowHtml).map { cellText(it.groupValues[1]) }.toList()
+}
+
+/** 表头名映射到字段名；映射不到返回 null（与鸿蒙 HtmlParser.mapHeaderNameToField 一致） */
+private fun mapHeaderNameToField(header: String): String? {
+    val name = header.replace(Regex("\\s+"), "")
+    return when (name) {
+        "教学楼" -> "building"
+        "名称" -> "name"
+        "容量" -> "capacity"
+        "教室设备配置" -> "equipmentConfig"
+        else -> null
+    }
+}
+
+/** 识别用 td 书写的表头行（出现任一已知列名即认定） */
+private fun looksLikeHeaderRow(cells: List<String>): Boolean =
+    cells.any { mapHeaderNameToField(it) != null }
 
 /** 从 JSON 文本中提取顶层字符串字段（避免依赖 JSON.parse 整体解析） */
 fun extractJsonStringTop(json: String, key: String): String? = extractJsonString(json, key)

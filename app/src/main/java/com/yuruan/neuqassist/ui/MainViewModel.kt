@@ -83,6 +83,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var webChannelFailed = false
     private var querySeq = 0
 
+    /** 实时查询隐形 WebView 的预热状态（与鸿蒙端 eamsWarmBase / eamsWarmAt 一致） */
+    private var eamsWarmBase = ""
+    private var eamsWarmAt = 0L
+
     // ===== 课表页状态（对应 ScheduleView.ets） =====
     var termStartDate by mutableStateOf(parseTermStart(settings.termStartDate))
     var realWeek by mutableStateOf(ScheduleViewUtil.computeRealWeek(termStartDate))
@@ -452,37 +456,92 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             )
         } else AppConfig.DEFAULT_BASE_URL
 
-        val page = fetchViaWeb("${base}homeExt.action")
-        if (page.contains("form['password']") || page.contains("casLoginForm")) {
-            throw AppError.fetch("登录会话已失效，请重新网页登录")
+        // ① 先把已保存的网页会话 Cookie 回灌 WebView 的 CookieManager：
+        //    进程回收 / Cookie 未及时落盘 / 只注入过原生客户端时，WebView 会以未登录
+        //    身份访问教务页，被 302 到 CAS → 表现为「实时查询永远登录失效」。
+        if (sessionCookies.isNotEmpty()) {
+            val urls = if (useWebvpn) {
+                listOf("${AppConfig.DEFAULT_WEBVPN_BASE_URL}/", "http://jwxt.neuq.edu.cn/")
+            } else {
+                listOf("http://jwxt.neuq.edu.cn/")
+            }
+            WebFetchHelper.seedCookies(sessionCookies, urls)
         }
 
-        val body = "classroom.building.id=&" +
-            "cycleTime.dateBegin=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
-            "cycleTime.dateEnd=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
-            "timeBegin=$timeBegin&timeEnd=$timeEnd&pageSize=1000&" +
-            "classroom.type.id=&classroom.campus.id=&seats=&classroom.name=&" +
-            "cycleTime.cycleCount=1&cycleTime.cycleType=1&roomApplyTimeType=0"
-        val js = "(function(){" +
-            "var x=new XMLHttpRequest();" +
-            "x.open('POST','classroom/apply/free!search.action',false);" +
-            "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');" +
-            "x.send('$body');" +
-            "window.__ncr = x.responseText;" +
-            "return x.status + '|' + String(x.responseText.length);" +
-            "})()"
-        val meta = WebFetchHelper.runJs(js).trim().trim('"')
-        val parts = meta.split("|")
-        val status = parts.getOrNull(0)?.toIntOrNull()
-        val total = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        if (status == null || total <= 0) {
-            throw AppError.fetch("教务页面内请求无响应（脚本返回: $meta），多半是会话已过期，请重新网页登录")
+        var where: String = WebFetchHelper.lastLoadedUrl ?: "未知"
+        try {
+            // ② 加载教务页面；10 分钟内且当前页面仍是同一 base 时复用，减少 WebVPN 请求
+            val warmValid = eamsWarmBase == base &&
+                (System.currentTimeMillis() - eamsWarmAt) < 10 * 60 * 1000L &&
+                WebFetchHelper.lastLoadedUrl?.startsWith(base) == true
+            if (!warmValid) {
+                val page = fetchViaWeb("${base}homeExt.action")
+                where = try {
+                    WebFetchHelper.runJs("location.href").ifEmpty { where }
+                } catch (e: Exception) {
+                    where
+                }
+                if (page.isEmpty()) {
+                    throw AppError.fetch(
+                        "教务页面加载失败（30 秒内未完成；当前页面: $where）。请检查网络后重试，或重新网页登录"
+                    )
+                }
+                if (isEamsLoginPage(page, where)) {
+                    throw AppError.fetch("登录会话已失效（当前页面: $where），请重新网页登录")
+                }
+                eamsWarmBase = base
+                eamsWarmAt = System.currentTimeMillis()
+            } else {
+                where = WebFetchHelper.lastLoadedUrl ?: where
+            }
+
+            // ③ 注入同步 XHR 查询（同源无跨域限制），返回 状态码|响应长度
+            val body = "classroom.building.id=&" +
+                "cycleTime.dateBegin=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
+                "cycleTime.dateEnd=${java.net.URLEncoder.encode(date, "UTF-8")}&" +
+                "timeBegin=$timeBegin&timeEnd=$timeEnd&pageSize=1000&" +
+                "classroom.type.id=&classroom.campus.id=&seats=&classroom.name=&" +
+                "cycleTime.cycleCount=1&cycleTime.cycleType=1&roomApplyTimeType=0"
+            val js = "(function(){" +
+                "var x=new XMLHttpRequest();" +
+                "x.open('POST','classroom/apply/free!search.action',false);" +
+                "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');" +
+                "x.send('$body');" +
+                "window.__ncr = x.responseText || '';" +
+                "return x.status + '|' + String((window.__ncr || '').length);" +
+                "})()"
+            val meta = WebFetchHelper.runJs(js).trim().trim('"')
+            val parts = meta.split("|")
+            val status = parts.getOrNull(0)?.toIntOrNull()
+            val total = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            if (status == null || total <= 0) {
+                throw AppError.fetch(
+                    "教务页面内请求无响应（当前页面: $where；脚本返回: $meta），" +
+                        "多半是会话已过期，请重新网页登录"
+                )
+            }
+            val html = WebFetchHelper.readJsString("window.__ncr", total)
+            if (html.contains("会话已经被过期") || !html.contains("gridtable")) {
+                throw AppError.fetch(
+                    "教务返回异常响应（状态码 $status，$total 字节；当前页面: $where），" +
+                        "请重新网页登录后重试"
+                )
+            }
+            return html
+        } catch (e: Exception) {
+            // 任何失败都作废预热，下一次强制重新加载页面
+            eamsWarmBase = ""
+            throw e
         }
-        val html = WebFetchHelper.readJsString("window.__ncr", total)
-        if (html.contains("会话已经被过期") || !html.contains("gridtable")) {
-            throw AppError.fetch("教务返回异常响应（状态码 $status，$total 字节），请重新网页登录后重试")
-        }
-        return html
+    }
+
+    /** 判定教务/网关页面是否落在登录页（比正文标记更早、更可靠） */
+    private fun isEamsLoginPage(page: String, url: String): Boolean {
+        if (page.contains("form['password']") || page.contains("casLoginForm")) return true
+        val u = url.lowercase()
+        return u.contains("/authserver/login") || u.contains("/do-login") ||
+            u.contains("cas_login") || u.contains("/cas/login") ||
+            u.contains("/eams/login")
     }
 
     /**
@@ -631,6 +690,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings.useWebvpn = mode == "webvpn"
         service = null
         webChannelFailed = false
+        eamsWarmBase = ""
         errorMsg = ""
         importError = ""
         terms = emptyList()
@@ -644,6 +704,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings.sessionCookies = ""
         settings.sessionMode = ""
         service = null
+        eamsWarmBase = ""
         sessionModeLabel = "未登录"
     }
 

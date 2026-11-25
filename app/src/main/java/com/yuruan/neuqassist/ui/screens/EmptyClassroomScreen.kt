@@ -68,6 +68,8 @@ import com.yuruan.neuqassist.ui.theme.TextTertiary
 fun EmptyClassroomScreen(
     cloudSource: Boolean,
     onCloudSourceChange: (Boolean) -> Unit,
+    sessionReady: Boolean,
+    onGoLogin: () -> Unit,
     dayOffset: Int,
     onDayChange: (Int) -> Unit,
     slotIndex: Int,
@@ -142,6 +144,26 @@ fun EmptyClassroomScreen(
             }
 
             Spacer(modifier = Modifier.height(Dimens.gapLarge))
+
+            // 实时查询需要一次网页登录会话：直接给出入口，避免用户卡在「请先登录」提示上
+            if (!cloudSource && !sessionReady) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = WarnBg,
+                    shape = RoundedCornerShape(Dimens.smallRadius)
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            text = "实时查询需要一次教务网页登录会话（默认通道无需账号密码）",
+                            fontSize = 13.sp,
+                            color = WarnOrange
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        SecondaryButton(text = "去网页登录", onClick = onGoLogin)
+                    }
+                }
+                Spacer(modifier = Modifier.height(Dimens.gapLarge))
+            }
 
             // 日期选择（单行横向滚动）
             Column {

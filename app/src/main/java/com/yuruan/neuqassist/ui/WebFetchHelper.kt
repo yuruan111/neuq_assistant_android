@@ -5,7 +5,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import kotlin.coroutines.resume
 
@@ -28,6 +30,11 @@ object WebFetchHelper {
 
     @Volatile
     private var webView: WebView? = null
+
+    /** 最近一次 onPageFinished 落地的地址（供实时查询判定当前页面/复用预热） */
+    @Volatile
+    var lastLoadedUrl: String? = null
+        private set
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -56,6 +63,34 @@ object WebFetchHelper {
     }
 
     /**
+     * 把网页登录提取的会话 Cookie 回灌到 WebView 的 CookieManager。
+     *
+     * 为什么需要：实时查询的页面加载依赖 WebView 自身的 Cookie 罐；进程被系统回收、
+     * Cookie 落盘未及时 flush、或只在原生客户端注入过 Cookie 时，WebView 会以「未登录」
+     * 身份访问教务页 → 被 302 到 CAS 登录页 → 实时查询表现为「怎么都登录失效」。
+     * 每次查询前用已保存的 sessionCookies 兜底回灌，可自愈这类状态。
+     */
+    suspend fun seedCookies(cookieHeader: String, urls: List<String>) {
+        if (cookieHeader.isEmpty() || urls.isEmpty()) return
+        try {
+            withContext(Dispatchers.Main) {
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                for (url in urls) {
+                    for (raw in cookieHeader.split(";")) {
+                        val pair = raw.trim()
+                        if (pair.isEmpty() || !pair.contains('=')) continue
+                        cm.setCookie(url, pair)
+                    }
+                }
+                cm.flush()
+            }
+        } catch (e: Exception) {
+            com.yuruan.neuqassist.data.Logger.warn("WebView Cookie 回灌失败: ${e.message}")
+        }
+    }
+
+    /**
      * 经 WebView 拉取 URL 的完整 HTML（含分块取回）。
      * 返回空串表示失败。
      */
@@ -63,7 +98,12 @@ object WebFetchHelper {
         return try {
             val wv = ensureWebView(context)
             val loaded = loadPage(wv, url)
-            if (!loaded) return ""
+            if (!loaded) {
+                com.yuruan.neuqassist.data.Logger.warn(
+                    "WebView 页面加载失败（30s 超时或主文档错误）: $url"
+                )
+                return ""
+            }
             // 先取总长度，再按 15000 字符分块取回拼接
             val lenStr = runJs(wv, "document.documentElement.outerHTML.length")
             val total = lenStr.trim().trim('"').toIntOrNull() ?: return ""
@@ -103,6 +143,7 @@ object WebFetchHelper {
                         )
                         return
                     }
+                    if (loadedUrl != null) lastLoadedUrl = loadedUrl
                     done = true
                     mainHandler.removeCallbacks(timeoutRunnable)
                     if (cont.isActive) cont.resume(true)
@@ -262,6 +303,7 @@ object WebFetchHelper {
                 webView?.loadUrl("about:blank")
                 webView?.destroy()
                 webView = null
+                lastLoadedUrl = null
             } catch (e: Exception) {
                 // 忽略
             }

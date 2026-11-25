@@ -348,6 +348,12 @@ fun MainScreen(
                     Tab.CLASSROOM -> EmptyClassroomScreen(
                         cloudSource = vm.cloudSource,
                         onCloudSourceChange = { vm.updateCloudSource(it) },
+                        sessionReady = vm.sessionCookies.isNotEmpty() &&
+                            ((vm.sessionMode == "webvpn") == vm.useWebvpn),
+                        onGoLogin = {
+                            webLoginMode = if (vm.sessionMode == "eams") "eams" else "webvpn"
+                            showWebLogin = true
+                        },
                         dayOffset = vm.dayOffset,
                         onDayChange = { vm.setDay(it) },
                         slotIndex = vm.slotIndex,
