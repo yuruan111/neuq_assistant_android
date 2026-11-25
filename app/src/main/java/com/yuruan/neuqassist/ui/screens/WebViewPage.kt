@@ -2,6 +2,9 @@ package com.yuruan.neuqassist.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.net.http.SslError
+import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -51,6 +55,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -80,6 +86,18 @@ import com.yuruan.neuqassist.ui.theme.TextTertiary
  *    及其子域（http 放行是因教务系统本身不支持 HTTPS）
  * 其余一律拦截。域名匹配做后缀边界校验，避免误放行 evil-neuq.edu.cn.attacker.com。
  */
+private const val DESKTOP_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+private fun isInternalWebScheme(url: String): Boolean {
+    val lower = url.trim().lowercase()
+    return lower.startsWith("about:") ||
+        lower.startsWith("javascript:") ||
+        lower.startsWith("blob:") ||
+        lower.startsWith("data:")
+}
+
 private fun isAllowedUrl(url: String): Boolean {
     val m = Regex("^https?://([^/:?#]+)", RegexOption.IGNORE_CASE).find(url) ?: return false
     val host = m.groupValues[1].lowercase()
@@ -112,13 +130,25 @@ private const val FP_PATH = "/fingerprint"
  *    不开这两项时，部分未做移动适配的登录页会按桌面宽度渲染，
  *    出现排版错乱、内容被横向裁切；
  *  - mixedContentMode：学校 WebVPN/CAS 登录页是 https，但常引用 http 静态资源，
- *    WebView 默认拦截混合内容 → 样式表与脚本加载不全，页面「渲染不全」；
+ *    必须使用 MIXED_CONTENT_ALWAYS_ALLOW 放行主动混合内容（CSS/JS/iframe），
+ *    否则样式表与脚本被拦截，页面「几乎未渲染」；
+ *  - desktopUa：教务系统按桌面浏览器 UA 放行并下发完整布局；
  *  - 第三方 Cookie：CAS 登录要在 vpn.neuq.edu.cn 与统一身份认证域之间跳转，
  *    不允许第三方 Cookie 时会在跳转环节丢失会话；
  *  - setSupportMultipleWindows(false)：登录页里的 target=_blank / window.open
  *    改为在当前 WebView 打开，否则点击后「没反应」。
  */
-private fun configureWebView(web: WebView, databaseEnabled: Boolean = true) {
+private fun configureWebView(
+    web: WebView,
+    databaseEnabled: Boolean = true,
+    desktopUa: Boolean = false
+) {
+    web.layoutParams = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+    )
+    web.isFocusable = true
+    web.isFocusableInTouchMode = true
     web.settings.apply {
         javaScriptEnabled = true
         domStorageEnabled = true
@@ -130,7 +160,13 @@ private fun configureWebView(web: WebView, databaseEnabled: Boolean = true) {
         displayZoomControls = false
         javaScriptCanOpenWindowsAutomatically = true
         setSupportMultipleWindows(false)
-        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        loadsImagesAutomatically = true
+        blockNetworkImage = false
+        cacheMode = WebSettings.LOAD_DEFAULT
+        mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        if (desktopUa) {
+            userAgentString = DESKTOP_USER_AGENT
+        }
     }
     CookieManager.getInstance().setAcceptCookie(true)
     CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
@@ -145,8 +181,18 @@ fun WebViewPage(
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(url) }
     var loading by remember { mutableStateOf(true) }
+    var loadProgress by remember { mutableStateOf(0) }
     var loadError by remember { mutableStateOf("") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+    BackHandler {
+        val wv = webViewRef
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            onBack()
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -207,14 +253,21 @@ fun WebViewPage(
                         WebView(ctx).apply {
                             configureWebView(this)
                             webViewRef = this
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    loadProgress = newProgress
+                                }
+                            }
                             webViewClient = object : WebViewClient() {
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView?,
                                     request: WebResourceRequest?
                                 ): Boolean {
                                     val u = request?.url?.toString() ?: return false
-                                    if (isAllowedUrl(u)) return false
-                                    loadError = "已拦截非白名单链接"
+                                    if (isInternalWebScheme(u) || isAllowedUrl(u)) return false
+                                    if (request.isForMainFrame) {
+                                        loadError = "已拦截非白名单链接"
+                                    }
                                     return true
                                 }
 
@@ -257,6 +310,16 @@ fun WebViewPage(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("该链接不在允许的域名范围内", fontSize = 14.sp, color = TextTertiary)
                 }
+            }
+
+            if (loadProgress in 1..99) {
+                LinearProgressIndicator(
+                    progress = { loadProgress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.TopCenter)
+                )
             }
 
             if (loading) {
@@ -314,6 +377,7 @@ fun WebLoginPage(
     }
     var currentUrl by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
+    var loadProgress by remember { mutableStateOf(0) }
     var toastMsg by remember { mutableStateOf("") }
     /** 加载失败信息（错误码/描述），非空时显示在页面上——把「打不开」变成可读原因 */
     var errorText by remember { mutableStateOf("") }
@@ -323,6 +387,16 @@ fun WebLoginPage(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var loginDetected by remember { mutableStateOf(false) }
     var exiting by remember { mutableStateOf(false) }
+
+    BackHandler {
+        val wv = webViewRef
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else if (!exiting) {
+            exiting = true
+            onBack()
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -423,6 +497,19 @@ fun WebLoginPage(
                     color = if (loginDetected) MaterialTheme.colorScheme.primary else TextTertiary
                 )
             }
+            Text(
+                text = "↻",
+                fontSize = 18.sp,
+                color = TextPrimary,
+                modifier = Modifier
+                    .clickable {
+                        stuck = false
+                        errorText = ""
+                        loading = true
+                        webViewRef?.reload()
+                    }
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            )
             TextButton(onClick = {
                 if (exiting) return@TextButton
                 val cm = CookieManager.getInstance()
@@ -476,17 +563,25 @@ fun WebLoginPage(
             AndroidView(
                 factory = { ctx ->
                     WebView(ctx).apply {
-                        configureWebView(this, databaseEnabled = false)
+                        configureWebView(this, databaseEnabled = false, desktopUa = true)
                         webViewRef = this
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                loadProgress = newProgress
+                                if (newProgress >= 80 && currentUrl.isNotEmpty() && !currentUrl.contains(FP_PATH)) {
+                                    loading = false
+                                }
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
                                 request: WebResourceRequest?
                             ): Boolean {
-                                // http/https 留在 WebView 内；其余 scheme（tel:/mailto: 等）
-                                // 交给系统处理，避免 ERR_UNKNOWN_URL_SCHEME
+                                // http/https 与页面内部 scheme（about/javascript/blob/data）留在 WebView 内；
+                                // 其余 scheme（tel:/mailto: 等）交给系统处理，避免 ERR_UNKNOWN_URL_SCHEME
                                 val u = request?.url?.toString() ?: return false
-                                if (u.startsWith("http://") || u.startsWith("https://")) {
+                                if (u.startsWith("http://") || u.startsWith("https://") || isInternalWebScheme(u)) {
                                     return false
                                 }
                                 return try {
@@ -494,6 +589,13 @@ fun WebLoginPage(
                                     true
                                 } catch (e: Exception) {
                                     true
+                                }
+                            }
+
+                            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                                url?.let { currentUrl = it }
+                                if (url?.contains(FP_PATH) != true) {
+                                    loading = false
                                 }
                             }
 
@@ -538,12 +640,32 @@ fun WebLoginPage(
                                         "${request.url}"
                                 }
                             }
+
+                            override fun onReceivedSslError(
+                                view: WebView?,
+                                handler: SslErrorHandler?,
+                                error: SslError?
+                            ) {
+                                handler?.cancel()
+                                loading = false
+                                errorText = "SSL 证书校验未通过（${error?.primaryError ?: -1}）：" +
+                                    "${error?.url ?: currentUrl}"
+                            }
                         }
                         // loadUrl 由 LaunchedEffect 在指纹预置完成后调用（见上方）
                     }
                 },
                 modifier = Modifier.fillMaxSize()
             )
+            if (loadProgress in 1..99) {
+                LinearProgressIndicator(
+                    progress = { loadProgress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                        .align(Alignment.TopCenter)
+                )
+            }
             if (errorText.isNotEmpty() || stuck) {
                 Box(
                     modifier = Modifier

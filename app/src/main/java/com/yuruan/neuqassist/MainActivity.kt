@@ -227,7 +227,6 @@ fun MainScreen(
 
     // ===== 网页登录全屏页 =====
     if (showWebLogin) {
-        BackHandler { showWebLogin = false }
         WebLoginPage(
             mode = webLoginMode,
             onSessionExtracted = { cookies ->
@@ -248,7 +247,6 @@ fun MainScreen(
     // 避免设备未装浏览器时「打不开」
     val webUrl = webViewUrl
     if (webUrl != null) {
-        BackHandler { webViewUrl = null }
         com.yuruan.neuqassist.ui.screens.WebViewPage(
             url = webUrl,
             title = webViewTitle,

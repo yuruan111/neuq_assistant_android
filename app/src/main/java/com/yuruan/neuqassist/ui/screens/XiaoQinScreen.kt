@@ -3,7 +3,6 @@ package com.yuruan.neuqassist.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -332,7 +331,6 @@ fun XiaoQinScreen(
     // ===== 网页查看（全屏） =====
     val url = webUrl
     if (url != null) {
-        BackHandler { webUrl = null }
         WebViewPage(
             url = url,
             title = webTitle,
