@@ -595,7 +595,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         } catch (e: Exception) {
                             failed++
                             val msg = e.message ?: ""
-                            if (msg.contains("会话已失效") || msg.contains("会话已过期")) throw e
+                            if (msg.contains("会话已失效") || msg.contains("会话已过期") ||
+                                msg.contains("教务页面加载失败")
+                            ) throw e
                             com.yuruan.neuqassist.data.Logger.warn("更新失败（第 ${d + 1} 天 ${slot.label}）: $msg")
                         }
                         delay(1200) // 限速：教务有「不要过快点击」风控
