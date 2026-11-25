@@ -45,6 +45,12 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+
+    testOptions {
+        // 纯 JVM 单测不启动 Android 运行时：android.util.Log 等桩方法返回默认值，
+        // 避免被测代码里的 Logger 调用抛 "not mocked"（只会静默丢弃日志）
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
