@@ -3,6 +3,7 @@ package com.yuruan.neuqassist.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,10 +42,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.yuruan.neuqassist.R
 import com.yuruan.neuqassist.data.Keys
 import com.yuruan.neuqassist.data.Personalize
 import com.yuruan.neuqassist.ui.HelpText
@@ -65,19 +68,19 @@ import kotlin.math.roundToInt
 private const val FEEDBACK_MAIL = "yuruan0011@yeah.net"
 
 private data class FeatureItem(
-    val icon: String,
+    val icon: Int,
     val title: String,
     val desc: String,
     val url: String = ""
 )
 
 private val FEATURES = listOf(
-    FeatureItem("🗺", "校园地图", "校园平面图 · 建筑分布",
+    FeatureItem(R.drawable.ic_xq_map, "校园地图", "校园平面图 · 建筑分布",
         "https://yx.neuq.edu.cn/__local/7/5F/5E/A1E576CD61EE642BCCD9481ABF8_4FA76E63_75EE5.png"),
-    FeatureItem("📅", "校历与作息", "学期日历 · 作息时间",
+    FeatureItem(R.drawable.ic_xq_calendar, "校历与作息", "学期日历 · 作息时间",
         "https://jwc.neuq.edu.cn/info/1077/3582.htm"),
-    FeatureItem("🍜", "生活服务", "食堂 · 图书馆 · 班车"),
-    FeatureItem("📮", "意见反馈", "问题反馈 · 功能建议")
+    FeatureItem(R.drawable.ic_xq_service, "生活服务", "食堂 · 图书馆 · 班车"),
+    FeatureItem(R.drawable.ic_xq_feedback, "意见反馈", "问题反馈 · 功能建议")
 )
 
 @Composable
@@ -120,12 +123,18 @@ fun XiaoQinScreen(
                 color = TextPrimary,
                 modifier = Modifier.weight(1f)
             )
-            Text(
-                text = "⚙",
-                fontSize = 20.sp,
-                color = Color(0xFF5A6472),
-                modifier = Modifier.clickable { showSettings = true }.padding(8.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clickable { showSettings = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_xq_settings),
+                    contentDescription = "设置",
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
 
         Column(
@@ -354,7 +363,11 @@ private fun FeatureCard(item: FeatureItem, onClick: () -> Unit, modifier: Modifi
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(item.icon, fontSize = 32.sp)
+            Image(
+                painter = painterResource(item.icon),
+                contentDescription = item.title,
+                modifier = Modifier.size(44.dp)
+            )
             Text(
                 item.title,
                 fontSize = 15.sp,

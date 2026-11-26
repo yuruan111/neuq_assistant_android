@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -753,11 +754,11 @@ private fun AdjustPanelDialog(
     onDismiss: () -> Unit
 ) {
     val items = listOf(
-        "📥" to "导入课表",
-        "⏰" to "上课时间",
-        "📅" to "学期起点",
-        "📚" to "课程管理",
-        "❓" to "常见问题"
+        com.yuruan.neuqassist.R.drawable.ic_adjust_import to "导入课表",
+        com.yuruan.neuqassist.R.drawable.ic_adjust_times to "上课时间",
+        com.yuruan.neuqassist.R.drawable.ic_adjust_term to "学期起点",
+        com.yuruan.neuqassist.R.drawable.ic_adjust_courses to "课程管理",
+        com.yuruan.neuqassist.R.drawable.ic_adjust_faq to "常见问题"
     )
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Surface(shape = RoundedCornerShape(16.dp), color = Color.White) {
@@ -786,7 +787,12 @@ private fun AdjustPanelDialog(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text(icon, fontSize = 26.sp)
+                                        Image(
+                                            painter = painterResource(icon),
+                                            contentDescription = title,
+                                            modifier = Modifier.size(30.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
                                         Text(title, fontSize = 14.sp, color = TextPrimary)
                                     }
                                 }

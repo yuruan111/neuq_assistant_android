@@ -1,5 +1,6 @@
 package com.yuruan.neuqassist.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,9 +114,15 @@ fun ScheduleScreen(
                         color = TextSecondary,
                         modifier = Modifier.weight(1f)
                     )
-                    CircleBtn("‹") { onSwitchWeek(-1) }
+                    CircleIconBtn(
+                        iconRes = com.yuruan.neuqassist.R.drawable.ic_week_prev,
+                        desc = "上一周"
+                    ) { onSwitchWeek(-1) }
                     Spacer(modifier = Modifier.width(6.dp))
-                    CircleBtn("›") { onSwitchWeek(1) }
+                    CircleIconBtn(
+                        iconRes = com.yuruan.neuqassist.R.drawable.ic_week_next,
+                        desc = "下一周"
+                    ) { onSwitchWeek(1) }
                     Spacer(modifier = Modifier.width(6.dp))
                     CircleBtn("⋯") { onOpenAdjust() }
                 }
@@ -209,6 +217,25 @@ fun ScheduleScreen(
 }
 
 /** 圆形小按钮（对应原端 ButtonType.Circle） */
+/** 圆形图标按钮（周切换等，图标与鸿蒙端 ic_week_* 线性箭头一致） */
+@Composable
+private fun CircleIconBtn(iconRes: Int, desc: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.size(40.dp),
+        color = Color(0x33FFFFFF),
+        shape = CircleShape
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = desc,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
+
 @Composable
 private fun CircleBtn(text: String, onClick: () -> Unit) {
     Surface(
