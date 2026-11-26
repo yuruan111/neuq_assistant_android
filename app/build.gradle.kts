@@ -20,8 +20,14 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 开启 R8 代码压缩 + 资源裁剪：release 不再打包未使用的类与资源
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        debug {
+            // 调试包保持不混淆（保留符号与断点能力），体积靠精简依赖控制
+            isMinifyEnabled = false
         }
     }
 
@@ -66,15 +72,15 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    // 只用到 ArrowBack / Share 两个核心图标：material-icons-extended 会引入上千个图标类
+    // （debug 包 dex 里多出约 55 MB 未压缩），改用 core 后体积大幅下降
+    implementation("androidx.compose.material:material-icons-core")
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.webkit:webkit:1.12.0")
 
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation(composeBom)
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    // 无 @Preview、无 androidTest 源码：不再引入 ui-tooling / ui-test-manifest，
+    // 避免 debug 包带上整套预览与测试运行时（约 3-4 MB dex）
 }
