@@ -2,6 +2,7 @@ package com.yuruan.neuqassist.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -125,22 +126,31 @@ fun EmptyClassroomScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = Dimens.screenPadding)
         ) {
-            // 数据来源切换
+            // 数据来源切换：实时查询为主通道，云端数据为备用通道
             Column(modifier = Modifier.padding(top = 4.dp)) {
                 Text("数据来源", fontSize = 13.sp, color = TextSecondary)
                 Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip(
-                        item = "云端数据（免登录）",
-                        selected = cloudSource,
-                        onClick = { onCloudSourceChange(true) }
-                    )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
                     Chip(
                         item = "实时查询（需登录）",
                         selected = !cloudSource,
                         onClick = { onCloudSourceChange(false) }
                     )
+                    Chip(
+                        item = "云端数据（备用通道）",
+                        selected = cloudSource,
+                        onClick = { onCloudSourceChange(true) }
+                    )
                 }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "实时查询为主通道；云端数据为备用（免登录，每小时更新）",
+                    fontSize = 11.sp,
+                    color = TextSecondary
+                )
             }
 
             Spacer(modifier = Modifier.height(Dimens.gapLarge))

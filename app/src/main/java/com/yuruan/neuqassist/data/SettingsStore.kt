@@ -55,8 +55,9 @@ class SettingsStore(context: Context) {
         get() = getBoolean(Keys.KEY_USE_WEBVPN, false)
         set(v) = putBoolean(Keys.KEY_USE_WEBVPN, v)
 
+    /** 数据来源：false=实时查询（主通道，默认）；true=云端数据（备用通道） */
     var cloudSource: Boolean
-        get() = getBoolean(Keys.KEY_CLOUD_SOURCE, true)
+        get() = getBoolean(Keys.KEY_CLOUD_SOURCE, false)
         set(v) = putBoolean(Keys.KEY_CLOUD_SOURCE, v)
 
     var serverUrl: String

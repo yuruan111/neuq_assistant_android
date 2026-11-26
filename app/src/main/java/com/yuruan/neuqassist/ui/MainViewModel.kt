@@ -301,7 +301,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ) ?: return false
             result = hit
             cacheInfoText = "本地缓存 · 更新于 ${cached.updateTime}"
-            sourceText = "数据来源：云端缓存（每小时更新，本次未联网）"
+            sourceText = "数据来源：云端缓存（备用通道·每小时更新，本次未联网）"
             true
         } catch (e: Exception) {
             com.yuruan.neuqassist.data.Logger.warn("缓存命中判定失败: ${e.message}")
@@ -340,14 +340,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         if (querySeq == seq) {
                             result = fetched
                             sourceText = if (serverUrl.isNotEmpty()) {
-                                "数据来源：云端数据（自建服务器）"
+                                "数据来源：云端数据（备用通道·自建服务器）"
                             } else {
-                                "数据来源：云端数据（公共镜像，免登录·每小时更新）"
+                                "数据来源：云端数据（备用通道·公共镜像，免登录/每小时更新）"
                             }
                         }
                     } catch (e: Exception) {
                         if (querySeq == seq) {
-                            errorMsg = "${e.message}（云端来源，可切\"实时查询\"获取更精确数据）"
+                            errorMsg = "${e.message}（云端为备用通道，可切实时查询获取最新数据）"
                         }
                     } finally {
                         loading = false
