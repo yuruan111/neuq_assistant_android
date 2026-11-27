@@ -39,6 +39,21 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
+ * 判定教务/网关页面是否落在登录页或指纹中间页（供实时查询与单测共用）。
+ */
+internal fun isEamsLoginPage(page: String, url: String): Boolean {
+    if (page.contains("form['password']") ||
+        page.contains("casLoginForm") ||
+        page.contains("pwdDefaultEncryptSalt") ||
+        page.contains("/do-login") ||
+        page.contains("/set-fingerprint")
+    ) {
+        return true
+    }
+    return com.yuruan.neuqassist.ui.screens.isWebLoginPendingUrl(url)
+}
+
+/**
  * 主 ViewModel —— 编排各页业务逻辑（对应 HarmonyOS 端 Index.ets / ScheduleView.ets /
  * XiaoQinView.ets / MainPage.ets 的 aboutToAppear / doQuery / updateRecentAll 等）
  */
@@ -461,9 +476,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         //    身份访问教务页，被 302 到 CAS → 表现为「实时查询永远登录失效」。
         if (sessionCookies.isNotEmpty()) {
             val urls = if (useWebvpn) {
-                listOf("${AppConfig.DEFAULT_WEBVPN_BASE_URL}/", "http://jwxt.neuq.edu.cn/")
+                listOf("${AppConfig.DEFAULT_WEBVPN_BASE_URL}/")
             } else {
-                listOf("http://jwxt.neuq.edu.cn/")
+                listOf("http://jwxt.neuq.edu.cn/eams/", "http://jwxt.neuq.edu.cn/")
             }
             WebFetchHelper.seedCookies(sessionCookies, urls)
         }
@@ -486,8 +501,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         "教务页面加载失败（30 秒内未完成；当前页面: $where）。请检查网络后重试，或重新网页登录"
                     )
                 }
-                if (isEamsLoginPage(page, where)) {
-                    throw AppError.fetch("登录会话已失效（当前页面: $where），请重新网页登录")
+                if (isEamsLoginPage(page, where) || !where.lowercase().contains("/eams/")) {
+                    throw AppError.fetch("登录会话已失效（当前页面: $where），请点击下方「重新网页登录」")
                 }
                 eamsWarmBase = base
                 eamsWarmAt = System.currentTimeMillis()
@@ -533,15 +548,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             eamsWarmBase = ""
             throw e
         }
-    }
-
-    /** 判定教务/网关页面是否落在登录页（比正文标记更早、更可靠） */
-    private fun isEamsLoginPage(page: String, url: String): Boolean {
-        if (page.contains("form['password']") || page.contains("casLoginForm")) return true
-        val u = url.lowercase()
-        return u.contains("/authserver/login") || u.contains("/do-login") ||
-            u.contains("cas_login") || u.contains("/cas/login") ||
-            u.contains("/eams/login")
     }
 
     /**
@@ -707,6 +713,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings.sessionMode = ""
         service = null
         eamsWarmBase = ""
+        eamsWarmAt = 0L
+        try {
+            CookieManager.getInstance().apply {
+                removeAllCookies(null)
+                flush()
+            }
+        } catch (_: Exception) {
+        }
         sessionModeLabel = "未登录"
     }
 

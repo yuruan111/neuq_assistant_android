@@ -86,7 +86,7 @@ import com.yuruan.neuqassist.ui.theme.TextTertiary
  *    及其子域（http 放行是因教务系统本身不支持 HTTPS）
  * 其余一律拦截。域名匹配做后缀边界校验，避免误放行 evil-neuq.edu.cn.attacker.com。
  */
-private const val DESKTOP_USER_AGENT =
+internal const val DESKTOP_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
@@ -113,6 +113,32 @@ private fun isEamsHomeUrl(url: String): Boolean {
     val pathOnly = url.substringBefore('?').substringBefore('#')
     return Regex("^https?://jwxt\\.neuq\\.edu\\.cn/eams/homeExt\\.action(?:;|\$)", RegexOption.IGNORE_CASE)
         .containsMatchIn(pathOnly)
+}
+
+/**
+ * 判定 URL 是否仍停留在 WebVPN / CAS / 教务登录或设备指纹中间页（尚未登录成功）。
+ */
+internal fun isWebLoginPendingUrl(url: String): Boolean {
+    val u = url.trim().lowercase()
+    if (u.isEmpty()) return false
+    if (Regex("/login(?:[/?#;]|$)").containsMatchIn(u)) return true
+    return u.contains("/authserver/login") ||
+        u.contains("/do-login") ||
+        u.contains("cas_login") ||
+        u.contains("/cas/login") ||
+        u.contains("/eams/login") ||
+        u.contains("/fingerprint") ||
+        u.contains("/set-fingerprint")
+}
+
+/**
+ * 判定 URL 是否已落到 WebVPN 登录后的门户页或代理业务页。
+ */
+internal fun isWebvpnLoggedInUrl(url: String): Boolean {
+    val u = url.trim().lowercase()
+    return Regex("^https://vpn\\.neuq\\.edu\\.cn(?:/|$)").containsMatchIn(u) &&
+        !isWebLoginPendingUrl(u) &&
+        !u.contains("/authserver/")
 }
 
 /**
@@ -519,6 +545,10 @@ fun WebLoginPage(
             )
             TextButton(onClick = {
                 if (exiting) return@TextButton
+                if (currentUrl.isNotEmpty() && isWebLoginPendingUrl(currentUrl)) {
+                    toastMsg = "当前仍在登录页，请先完成登录后再点击「提取会话」"
+                    return@TextButton
+                }
                 val cm = CookieManager.getInstance()
                 cm.flush()
                 var cookies = if (activeMode == "webvpn") {
@@ -637,11 +667,14 @@ fun WebLoginPage(
 
                                 loading = false
                                 errorText = ""
-                                // eams 模式检测到重定向至 homeExt.action 时仅高亮提示并弹 Toast，不自动退栈
+                                // eams / webvpn 检测到登录落地时仅高亮提示并弹 Toast，不自动退栈
                                 val loadedUrl = url ?: ""
                                 if (activeMode != "webvpn" && !loginDetected && isEamsHomeUrl(loadedUrl)) {
                                     loginDetected = true
                                     toastMsg = "已检测到登录成功，请点击右上角「提取会话」"
+                                } else if (activeMode == "webvpn" && !loginDetected && isWebvpnLoggedInUrl(loadedUrl)) {
+                                    loginDetected = true
+                                    toastMsg = "已检测到 WebVPN 登录成功，请点击右上角「提取会话」"
                                 }
                             }
 

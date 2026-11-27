@@ -272,6 +272,16 @@ fun EmptyClassroomScreen(
             if (errorMsg.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(Dimens.gapLarge))
                 ErrorBanner(text = errorMsg)
+                if (!cloudSource && (
+                        errorMsg.contains("登录") ||
+                            errorMsg.contains("失效") ||
+                            errorMsg.contains("过期") ||
+                            errorMsg.contains("异常响应")
+                        )
+                ) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    SecondaryButton(text = "重新网页登录", onClick = onGoLogin)
+                }
             }
 
             if (cacheInfoText.isNotEmpty()) {

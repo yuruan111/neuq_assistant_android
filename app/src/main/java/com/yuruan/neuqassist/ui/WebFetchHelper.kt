@@ -48,6 +48,7 @@ object WebFetchHelper {
                 settings.databaseEnabled = false
                 settings.mediaPlaybackRequiresUserGesture = true
                 settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                settings.userAgentString = com.yuruan.neuqassist.ui.screens.DESKTOP_USER_AGENT
                 CookieManager.getInstance().setAcceptCookie(true)
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                 // 隐形：不绘制、不参与交互
@@ -72,18 +73,41 @@ object WebFetchHelper {
      */
     suspend fun seedCookies(cookieHeader: String, urls: List<String>) {
         if (cookieHeader.isEmpty() || urls.isEmpty()) return
+        val parsedPairs = cookieHeader.split(";")
+            .map { it.trim() }
+            .filter { it.indexOf('=') > 0 }
+        if (parsedPairs.isEmpty()) return
         try {
             withContext(Dispatchers.Main) {
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
+                var seededAny = false
                 for (url in urls) {
-                    for (raw in cookieHeader.split(";")) {
-                        val pair = raw.trim()
-                        if (pair.isEmpty() || !pair.contains('=')) continue
-                        cm.setCookie(url, pair)
+                    val existing = cm.getCookie(url) ?: ""
+                    val existingNames = HashSet<String>()
+                    for (item in existing.split(";")) {
+                        val eq = item.indexOf('=')
+                        if (eq > 0) {
+                            existingNames.add(item.substring(0, eq).trim().lowercase())
+                        }
+                    }
+                    val suffix = if (url.startsWith("https://", ignoreCase = true)) {
+                        "; Path=/; Secure"
+                    } else {
+                        "; Path=/"
+                    }
+                    for (pair in parsedPairs) {
+                        val eq = pair.indexOf('=')
+                        val name = pair.substring(0, eq).trim().lowercase()
+                        if (name.isEmpty() || name in existingNames) continue
+                        cm.setCookie(url, "$pair$suffix")
+                        existingNames.add(name)
+                        seededAny = true
                     }
                 }
-                cm.flush()
+                if (seededAny) {
+                    cm.flush()
+                }
             }
         } catch (e: Exception) {
             com.yuruan.neuqassist.data.Logger.warn("WebView Cookie 回灌失败: ${e.message}")
