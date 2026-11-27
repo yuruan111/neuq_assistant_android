@@ -329,6 +329,9 @@ fun MainScreen(
                         lineWeightSolid = vm.lineWeightSolid,
                         fontScaleKey = vm.scheduleFontScale,
                         cardRadiusDp = vm.scheduleCardRadius,
+                        rowHeightKey = vm.scheduleRowHeight,
+                        autoHideWeekend = vm.autoHideWeekend,
+                        hideTeacher = vm.hideCourseTeacher,
                         onSwitchWeek = {
                             vm.hapticTick()
                             vm.switchWeek(it)

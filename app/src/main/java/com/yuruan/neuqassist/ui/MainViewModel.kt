@@ -140,6 +140,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 课表卡片圆角（dp，2-16） */
     var scheduleCardRadius by mutableStateOf(settings.scheduleCardRadius)
         private set
+    /** 课表节次行高（'compact' | 'standard' | 'spacious'） */
+    var scheduleRowHeight by mutableStateOf(settings.scheduleRowHeight)
+        private set
+    /** 周末无课时自动隐藏周六/周日列 */
+    var autoHideWeekend by mutableStateOf(settings.autoHideWeekend)
+        private set
+    /** 隐藏课程卡片教师姓名 */
+    var hideCourseTeacher by mutableStateOf(settings.hideCourseTeacher)
+        private set
     /** 冷启动默认栏目（仅影响下次冷启动，切换栏目不回写） */
     var defaultLaunchTab by mutableStateOf(settings.defaultLaunchTab)
         private set
@@ -971,6 +980,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings.scheduleCardRadius = scheduleCardRadius
     }
 
+    /** 切换课表节次行高档位 */
+    fun updateScheduleRowHeight(key: String) {
+        val k = Personalize.normalizeRowHeight(key)
+        scheduleRowHeight = k
+        settings.scheduleRowHeight = k
+    }
+
+    /** 周末无课时自动折叠周六/周日列 */
+    fun updateAutoHideWeekend(v: Boolean) {
+        autoHideWeekend = v
+        settings.autoHideWeekend = v
+    }
+
+    /** 隐藏课程卡片教师姓名（隐藏后课表页显示「看教师」快捷切换） */
+    fun updateHideCourseTeacher(v: Boolean) {
+        hideCourseTeacher = v
+        settings.hideCourseTeacher = v
+    }
+
     /** 切换冷启动默认栏目（仅影响下次冷启动，不做页面跳转） */
     fun updateDefaultLaunchTab(v: Int) {
         defaultLaunchTab = Personalize.normalizeLaunchTab(v)
@@ -1031,6 +1059,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         themePreset = Personalize.DEFAULT_THEME_KEY
         scheduleFontScale = Personalize.DEFAULT_FONT_SCALE
         scheduleCardRadius = Personalize.DEFAULT_CARD_RADIUS
+        scheduleRowHeight = Personalize.DEFAULT_ROW_HEIGHT
+        autoHideWeekend = Personalize.DEFAULT_AUTO_HIDE_WEEKEND
+        hideCourseTeacher = Personalize.DEFAULT_HIDE_TEACHER
         defaultLaunchTab = Personalize.DEFAULT_LAUNCH_TAB
         bgEnabled = true
         bgImagePath = ""

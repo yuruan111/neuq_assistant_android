@@ -30,7 +30,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -79,6 +83,12 @@ fun ScheduleScreen(
     fontScaleKey: String,
     /** 课表卡片圆角（dp，2-16，个性化设置实时联动） */
     cardRadiusDp: Int,
+    /** 课表节次行高档位键（个性化设置实时联动） */
+    rowHeightKey: String,
+    /** 周末无课时自动隐藏周六/周日列 */
+    autoHideWeekend: Boolean,
+    /** 隐藏课程卡片教师姓名 */
+    hideTeacher: Boolean,
     /** 切周触感反馈开关由调用方注入；此处仅回调 */
     onSwitchWeek: (Int) -> Unit,
     onOpenAdjust: () -> Unit,
@@ -86,6 +96,11 @@ fun ScheduleScreen(
     onQuickJumpEmpty: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var teacherOnlyMode by remember { mutableStateOf(false) }
+    LaunchedEffect(hideTeacher) {
+        if (!hideTeacher) teacherOnlyMode = false
+    }
+
     // 根布局透明：全局背景（自定义/内置图 + 保护层）由 MainActivity 统一渲染后透出，
     // 对应 hap ScheduleView 的半透明保护层沉浸形态
     Column(
@@ -114,6 +129,34 @@ fun ScheduleScreen(
                         color = TextSecondary,
                         modifier = Modifier.weight(1f)
                     )
+                    if (hideTeacher) {
+                        val primary = MaterialTheme.colorScheme.primary
+                        Surface(
+                            onClick = { teacherOnlyMode = !teacherOnlyMode },
+                            modifier = Modifier.height(30.dp),
+                            color = if (teacherOnlyMode) primary else Color.White.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(15.dp),
+                            border = if (teacherOnlyMode) {
+                                null
+                            } else {
+                                androidx.compose.foundation.BorderStroke(1.dp, primary)
+                            }
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (teacherOnlyMode) "看课程" else "看教师",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (teacherOnlyMode) Color.White else primary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
                     CircleIconBtn(
                         iconRes = com.yuruan.neuqassist.R.drawable.ic_week_prev,
                         desc = "上一周"
@@ -129,38 +172,35 @@ fun ScheduleScreen(
             }
         }
 
-        // ===== 周网格 =====
+        // ===== 周网格（吸顶表头 + 可滚动网格区） =====
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                CourseGridView(
-                    courses = filterCoursesByWeek(courses, currentWeek),
-                    timeSlots = timeSlots,
-                    sideDateLabels = sideDateLabels,
-                    monthLabel = monthLabel,
-                    todayIndex = todayIndex,
-                    restFlags = restFlags,
-                    workFlags = workFlags,
-                    lineWeightSolid = lineWeightSolid,
-                    fontScaleKey = fontScaleKey,
-                    cardRadiusDp = cardRadiusDp,
-                    onCourseClick = onCourseClick,
-                    onBlankDoubleTap = {
-                        if (currentWeek != realWeek) onQuickJumpEmpty()
-                    },
-                    availableHeight = 480.dp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = if (currentWeek == realWeek) {
-                        "提示：查看其他周时，双击课表空白处回到本周"
-                    } else {
-                        "第${currentWeek}周（非本周）· 点击「回到本周」或双击空白处返回"
-                    },
-                    fontSize = 11.sp,
-                    color = TextTertiary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                )
+            val hintText = if (currentWeek == realWeek) {
+                "提示：查看其他周时，双击课表空白处回到本周"
+            } else {
+                "第${currentWeek}周（非本周）· 点击「回到本周」或双击空白处返回"
             }
+            CourseGridView(
+                courses = filterCoursesByWeek(courses, currentWeek),
+                timeSlots = timeSlots,
+                sideDateLabels = sideDateLabels,
+                monthLabel = monthLabel,
+                todayIndex = todayIndex,
+                restFlags = restFlags,
+                workFlags = workFlags,
+                lineWeightSolid = lineWeightSolid,
+                fontScaleKey = fontScaleKey,
+                cardRadiusDp = cardRadiusDp,
+                rowHeightKey = rowHeightKey,
+                autoHideWeekend = autoHideWeekend,
+                hideTeacher = hideTeacher,
+                teacherOnlyMode = teacherOnlyMode,
+                bottomHintText = hintText,
+                onCourseClick = onCourseClick,
+                onBlankDoubleTap = {
+                    if (currentWeek != realWeek) onQuickJumpEmpty()
+                },
+                modifier = Modifier.fillMaxSize()
+            )
 
             if (courses.isEmpty()) {
                 Box(

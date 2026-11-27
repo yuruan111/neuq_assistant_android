@@ -50,6 +50,12 @@ object Keys {
     const val KEY_SCHEDULE_FONT_SCALE = "scheduleFontScale"
     /** 课表卡片圆角（dp，2-16） */
     const val KEY_SCHEDULE_CARD_RADIUS = "scheduleCardRadius"
+    /** 课表节次行高：'compact' | 'standard' | 'spacious' */
+    const val KEY_SCHEDULE_ROW_HEIGHT = "scheduleRowHeight"
+    /** 周末无课时自动隐藏周六/周日列 */
+    const val KEY_AUTO_HIDE_WEEKEND = "scheduleAutoHideWeekend"
+    /** 隐藏课程卡片教师姓名 */
+    const val KEY_HIDE_COURSE_TEACHER = "scheduleHideTeacher"
     /** 冷启动默认栏目：0=课表查询 1=空教室 2=小秦帮 */
     const val KEY_DEFAULT_LAUNCH_TAB = "defaultLaunchTab"
 

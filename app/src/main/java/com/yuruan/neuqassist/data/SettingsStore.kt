@@ -204,6 +204,18 @@ class SettingsStore(context: Context) {
         get() = Personalize.normalizeCardRadius(getIntCompat(Keys.KEY_SCHEDULE_CARD_RADIUS, Personalize.DEFAULT_CARD_RADIUS))
         set(v) = putInt(Keys.KEY_SCHEDULE_CARD_RADIUS, v)
 
+    var scheduleRowHeight: String
+        get() = Personalize.normalizeRowHeight(getString(Keys.KEY_SCHEDULE_ROW_HEIGHT, Personalize.DEFAULT_ROW_HEIGHT))
+        set(v) = putString(Keys.KEY_SCHEDULE_ROW_HEIGHT, v)
+
+    var autoHideWeekend: Boolean
+        get() = getBoolean(Keys.KEY_AUTO_HIDE_WEEKEND, Personalize.DEFAULT_AUTO_HIDE_WEEKEND)
+        set(v) = putBoolean(Keys.KEY_AUTO_HIDE_WEEKEND, v)
+
+    var hideCourseTeacher: Boolean
+        get() = getBoolean(Keys.KEY_HIDE_COURSE_TEACHER, Personalize.DEFAULT_HIDE_TEACHER)
+        set(v) = putBoolean(Keys.KEY_HIDE_COURSE_TEACHER, v)
+
     var defaultLaunchTab: Int
         get() = Personalize.normalizeLaunchTab(getIntCompat(Keys.KEY_DEFAULT_LAUNCH_TAB, Personalize.DEFAULT_LAUNCH_TAB))
         set(v) = putInt(Keys.KEY_DEFAULT_LAUNCH_TAB, v)

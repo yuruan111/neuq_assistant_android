@@ -656,6 +656,72 @@ private fun PersonalizeDialog(
                     colors = SliderDefaults.colors(thumbColor = primary, activeTrackColor = primary)
                 )
 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "节次行高",
+                        fontSize = 14.sp,
+                        color = TextPrimary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = "调高可展示更多课程文字",
+                        fontSize = 11.sp,
+                        color = TextTertiary
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Personalize.ROW_HEIGHT_OPTIONS.forEach { item ->
+                        val selected = vm.scheduleRowHeight == item.key
+                        Text(
+                            text = item.name,
+                            fontSize = 13.sp,
+                            color = if (selected) Color.White else TextPrimary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(32.dp)
+                                .background(
+                                    if (selected) primary else SurfaceLight,
+                                    RoundedCornerShape(16.dp)
+                                )
+                                .clickable { vm.updateScheduleRowHeight(item.key) }
+                                .wrapContentHeight(Alignment.CenterVertically)
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("周末无课时隐藏周六/周日", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            text = "当周六日无课时按 5 列展示，单列更宽更易读",
+                            fontSize = 11.sp,
+                            color = TextTertiary
+                        )
+                    }
+                    Switch(
+                        checked = vm.autoHideWeekend,
+                        onCheckedChange = { vm.updateAutoHideWeekend(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = primary)
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("隐藏课程卡片教师姓名", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            text = "隐藏后课表顶栏显示「看教师」快捷键，一键切换为仅看教师",
+                            fontSize = 11.sp,
+                            color = TextTertiary
+                        )
+                    }
+                    Switch(
+                        checked = vm.hideCourseTeacher,
+                        onCheckedChange = { vm.updateHideCourseTeacher(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = primary)
+                    )
+                }
+
                 GroupDivider()
 
                 // ===== 使用习惯 =====
@@ -732,7 +798,7 @@ private fun PersonalizeDialog(
             title = { Text("恢复默认个性化设置？") },
             text = {
                 Text(
-                    "将重置：主题配色、课表显示（字号 / 圆角 / 网格线）、默认启动页，" +
+                    "将重置：主题配色、课表显示（字号 / 行高 / 圆角 / 周末折叠 / 教师显示 / 网格线）、默认启动页，" +
                         "以及背景设置（自定义背景会被清除）。\n\n" +
                         "账号密码、登录会话、课程数据、学期起点、缓存与隐私同意状态不受影响。"
                 )

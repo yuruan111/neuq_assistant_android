@@ -93,6 +93,28 @@ object Personalize {
     fun normalizeCardRadius(raw: Float): Int =
         if (raw.isNaN()) DEFAULT_CARD_RADIUS else raw.roundToInt().coerceIn(CARD_RADIUS_MIN, CARD_RADIUS_MAX)
 
+    // ===== 课表显示：节次行高 / 周末折叠 / 教师姓名 =====
+
+    /** 节次行高档位项（slotDp 为基准行高 dp） */
+    data class RowHeightOption(val key: String, val name: String, val slotDp: Int)
+
+    val ROW_HEIGHT_OPTIONS = listOf(
+        RowHeightOption("compact", "紧凑", 48),
+        RowHeightOption("standard", "标准", 58),
+        RowHeightOption("spacious", "舒展", 70)
+    )
+
+    const val DEFAULT_ROW_HEIGHT = "standard"
+
+    fun normalizeRowHeight(raw: String): String =
+        if (ROW_HEIGHT_OPTIONS.any { it.key == raw }) raw else DEFAULT_ROW_HEIGHT
+
+    fun rowHeightDp(key: String): Int =
+        ROW_HEIGHT_OPTIONS.firstOrNull { it.key == key }?.slotDp ?: 58
+
+    const val DEFAULT_AUTO_HIDE_WEEKEND = true
+    const val DEFAULT_HIDE_TEACHER = false
+
     // ===== 使用习惯：默认启动页 =====
 
     /** 启动页选项（index 与 MainActivity 的 Tab 顺序严格对应） */
@@ -137,6 +159,9 @@ object Personalize {
         store.themePreset = DEFAULT_THEME_KEY
         store.scheduleFontScale = DEFAULT_FONT_SCALE
         store.scheduleCardRadius = DEFAULT_CARD_RADIUS
+        store.scheduleRowHeight = DEFAULT_ROW_HEIGHT
+        store.autoHideWeekend = DEFAULT_AUTO_HIDE_WEEKEND
+        store.hideCourseTeacher = DEFAULT_HIDE_TEACHER
         store.defaultLaunchTab = DEFAULT_LAUNCH_TAB
         store.bgEnabled = true
         store.bgImagePath = ""
