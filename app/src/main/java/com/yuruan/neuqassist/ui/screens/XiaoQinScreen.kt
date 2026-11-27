@@ -213,7 +213,7 @@ fun XiaoQinScreen(
 
             // ===== 设置面板入口（原端在 bindSheet 中，此处以分组列表呈现） =====
             SettingsGroup(
-                items = listOf("个性化设置", "隐私政策", "开源许可", "免责声明"),
+                items = listOf("个性化设置", "隐私政策", "开源许可", "项目地址", "免责声明"),
                 onItemClick = { key ->
                     when (key) {
                         "个性化设置" -> showAppearance = true
@@ -298,12 +298,48 @@ fun XiaoQinScreen(
                             "github.com/wy723161060/neuq-classroom-app\n\n" +
                             "3. neuq-classroom-query——空教室查询逻辑与数据方案\n" +
                             "github.com/TsiaohanWang/neuq-classroom-query\n\n" +
+                            "本项目开源地址：\n${Keys.PROJECT_REPO_URL}\n\n" +
                             "各项目许可证全文见本应用仓库 THIRD-PARTY-NOTICES.md；" +
                             "其余部分为本项目原创代码。"
                     )
                 },
                 confirmButton = {
                     TextButton(onClick = { showDialog = null }) { Text("我知道了") }
+                }
+            )
+        }
+        "项目地址" -> {
+            AlertDialog(
+                onDismissRequest = { showDialog = null },
+                title = { Text("项目地址") },
+                text = {
+                    Text(
+                        "本项目已在 GitHub 开源，欢迎查看源码、提交 Issue 或反馈建议：\n\n" +
+                            Keys.PROJECT_REPO_URL
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        try {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(Keys.PROJECT_REPO_URL))
+                            )
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "无法打开浏览器", Toast.LENGTH_SHORT).show()
+                        }
+                        showDialog = null
+                    }) { Text("打开仓库") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        cm.setPrimaryClip(
+                            android.content.ClipData.newPlainText("repo", Keys.PROJECT_REPO_URL)
+                        )
+                        Toast.makeText(context, "已复制项目地址", Toast.LENGTH_SHORT).show()
+                        showDialog = null
+                    }) { Text("复制地址") }
                 }
             )
         }

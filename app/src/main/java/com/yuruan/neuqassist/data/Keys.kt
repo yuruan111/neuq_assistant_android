@@ -24,6 +24,9 @@ object Keys {
     /** 隐私政策在线页 */
     const val PRIVACY_POLICY_URL = "https://yuruan111.github.io/neuq-privacy/"
 
+    /** 安卓端开源项目地址 */
+    const val PROJECT_REPO_URL = "https://github.com/yuruan111/neuq_assistant_android"
+
     // —— 课表 ——
     const val KEY_TIME_SLOTS = "customTimeSlots"
     const val KEY_TERM_START = "termStartDate"
