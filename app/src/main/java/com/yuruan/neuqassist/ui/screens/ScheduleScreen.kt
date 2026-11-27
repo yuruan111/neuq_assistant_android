@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -34,7 +37,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,9 +51,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yuruan.neuqassist.data.CourseItem
-import com.yuruan.neuqassist.data.TimeSlot
-import com.yuruan.neuqassist.data.filterCoursesByWeek
 import com.yuruan.neuqassist.data.ScheduleViewUtil
+import com.yuruan.neuqassist.data.TimeSlot
+import com.yuruan.neuqassist.data.WeekHolidayFlags
+import com.yuruan.neuqassist.data.filterCoursesByWeek
 import com.yuruan.neuqassist.ui.theme.CoursePalette
 import com.yuruan.neuqassist.ui.theme.Dimens
 import com.yuruan.neuqassist.ui.theme.SurfaceGrey
@@ -55,6 +62,9 @@ import com.yuruan.neuqassist.ui.theme.SurfaceLight
 import com.yuruan.neuqassist.ui.theme.TextPrimary
 import com.yuruan.neuqassist.ui.theme.TextSecondary
 import com.yuruan.neuqassist.ui.theme.TextTertiary
+import java.util.Date
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 /**
  * 课表查询页 —— 移植自 HarmonyOS 端 views/ScheduleView.ets
@@ -70,13 +80,12 @@ fun ScheduleScreen(
     realWeek: Int,
     headDateText: String,
     termStartDateKey: String,
+    termStartDate: Date,
     timeSlots: List<TimeSlot>,
     courses: List<CourseItem>,
-    sideDateLabels: List<String>,
-    monthLabel: String,
-    todayIndex: Int,
-    restFlags: List<Boolean>,
-    workFlags: List<Boolean>,
+    todayDayIndex: Int,
+    holidayVersion: Int,
+    weekHolidayFlags: (Int) -> WeekHolidayFlags,
     /** 课表网格线是否加重（由「小秦帮 → 个性化设置」控制，持久化） */
     lineWeightSolid: Boolean,
     /** 课表文字大小档位键（个性化设置实时联动） */
@@ -91,6 +100,7 @@ fun ScheduleScreen(
     hideTeacher: Boolean,
     /** 切周触感反馈开关由调用方注入；此处仅回调 */
     onSwitchWeek: (Int) -> Unit,
+    onSelectWeek: (Int) -> Unit,
     onOpenAdjust: () -> Unit,
     onCourseClick: (CourseItem) -> Unit,
     onQuickJumpEmpty: () -> Unit,
@@ -100,6 +110,59 @@ fun ScheduleScreen(
     LaunchedEffect(hideTeacher) {
         if (!hideTeacher) teacherOnlyMode = false
     }
+
+    val maxWeek = ScheduleViewUtil.MAX_WEEK
+    val pagerState = rememberPagerState(
+        initialPage = ScheduleViewUtil.weekToPage(currentWeek, maxWeek),
+        pageCount = { maxWeek }
+    )
+    val coroutineScope = rememberCoroutineScope()
+    val latestCurrentWeek by rememberUpdatedState(currentWeek)
+    val latestOnSelectWeek by rememberUpdatedState(onSelectWeek)
+
+    // 仅记录真实用户拖拽意图，避免按钮连点触发 animateScrollToPage 取消时误回写旧页
+    var userDragged by remember { mutableStateOf(false) }
+    LaunchedEffect(pagerState) {
+        pagerState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                userDragged = true
+            }
+        }
+    }
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.isScrollInProgress to pagerState.currentPage }
+            .distinctUntilChanged()
+            .collect { (scrolling, page) ->
+                if (!scrolling && userDragged) {
+                    userDragged = false
+                    val newWeek = ScheduleViewUtil.pageToWeek(page, maxWeek)
+                    if (newWeek != latestCurrentWeek) {
+                        latestOnSelectWeek(newWeek)
+                    }
+                }
+            }
+    }
+
+    val targetPage = ScheduleViewUtil.weekToPage(currentWeek, maxWeek)
+    LaunchedEffect(targetPage) {
+        if (pagerState.currentPage != targetPage) {
+            pagerState.animateScrollToPage(targetPage)
+        }
+    }
+
+    val jumpBackToRealWeek: () -> Unit = {
+        if (currentWeek != realWeek) {
+            onQuickJumpEmpty()
+        } else {
+            val realPage = ScheduleViewUtil.weekToPage(realWeek, maxWeek)
+            if (pagerState.currentPage != realPage) {
+                coroutineScope.launch {
+                    pagerState.animateScrollToPage(realPage)
+                }
+            }
+        }
+    }
+    val displayWeek = ScheduleViewUtil.pageToWeek(pagerState.currentPage, maxWeek)
 
     // 根布局透明：全局背景（自定义/内置图 + 保护层）由 MainActivity 统一渲染后透出，
     // 对应 hap ScheduleView 的半透明保护层沉浸形态
@@ -124,7 +187,7 @@ fun ScheduleScreen(
                 Spacer(modifier = Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "第${currentWeek}周",
+                        text = "第${displayWeek}周",
                         fontSize = 13.sp,
                         color = TextSecondary,
                         modifier = Modifier.weight(1f)
@@ -172,35 +235,54 @@ fun ScheduleScreen(
             }
         }
 
-        // ===== 周网格（吸顶表头 + 可滚动网格区） =====
+        // ===== 周网格（吸顶表头 + 左右跟手滑动切周） =====
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            val hintText = if (currentWeek == realWeek) {
-                "提示：查看其他周时，双击课表空白处回到本周"
-            } else {
-                "第${currentWeek}周（非本周）· 点击「回到本周」或双击空白处返回"
-            }
-            CourseGridView(
-                courses = filterCoursesByWeek(courses, currentWeek),
-                timeSlots = timeSlots,
-                sideDateLabels = sideDateLabels,
-                monthLabel = monthLabel,
-                todayIndex = todayIndex,
-                restFlags = restFlags,
-                workFlags = workFlags,
-                lineWeightSolid = lineWeightSolid,
-                fontScaleKey = fontScaleKey,
-                cardRadiusDp = cardRadiusDp,
-                rowHeightKey = rowHeightKey,
-                autoHideWeekend = autoHideWeekend,
-                hideTeacher = hideTeacher,
-                teacherOnlyMode = teacherOnlyMode,
-                bottomHintText = hintText,
-                onCourseClick = onCourseClick,
-                onBlankDoubleTap = {
-                    if (currentWeek != realWeek) onQuickJumpEmpty()
-                },
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 1,
+                key = { it },
                 modifier = Modifier.fillMaxSize()
-            )
+            ) { pageIndex ->
+                val pageWeek = ScheduleViewUtil.pageToWeek(pageIndex, maxWeek)
+                val pageCourses = remember(courses, pageWeek) { filterCoursesByWeek(courses, pageWeek) }
+                val pageDateLabels = remember(termStartDate, pageWeek) {
+                    ScheduleViewUtil.weekDateLabels(termStartDate, pageWeek)
+                }
+                val pageMonthLabel = remember(termStartDate, pageWeek) {
+                    ScheduleViewUtil.monthLabel(termStartDate, pageWeek)
+                }
+                val pageTodayIndex = if (pageWeek == realWeek) todayDayIndex else -1
+                val pageHolidays = remember(termStartDate, pageWeek, holidayVersion) {
+                    weekHolidayFlags(pageWeek)
+                }
+                val hintText = if (pageWeek == realWeek) {
+                    "提示：左右滑动可切换周次；查看其他周时双击空白处回到本周"
+                } else {
+                    "第${pageWeek}周（非本周）· 左右滑动切周，点击「回到本周」或双击空白处返回"
+                }
+                CourseGridView(
+                    courses = pageCourses,
+                    timeSlots = timeSlots,
+                    sideDateLabels = pageDateLabels,
+                    monthLabel = pageMonthLabel,
+                    todayIndex = pageTodayIndex,
+                    restFlags = pageHolidays.restFlags,
+                    workFlags = pageHolidays.workFlags,
+                    lineWeightSolid = lineWeightSolid,
+                    fontScaleKey = fontScaleKey,
+                    cardRadiusDp = cardRadiusDp,
+                    rowHeightKey = rowHeightKey,
+                    autoHideWeekend = autoHideWeekend,
+                    hideTeacher = hideTeacher,
+                    teacherOnlyMode = teacherOnlyMode,
+                    bottomHintText = hintText,
+                    onCourseClick = onCourseClick,
+                    onBlankDoubleTap = {
+                        if (pageWeek != realWeek) jumpBackToRealWeek()
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
             if (courses.isEmpty()) {
                 Box(
@@ -235,9 +317,9 @@ fun ScheduleScreen(
             }
 
             // 非本周时悬浮「回到本周」按钮（对应原端双击空白处回到本周）
-            if (currentWeek != realWeek) {
+            if (displayWeek != realWeek) {
                 Surface(
-                    onClick = onQuickJumpEmpty,
+                    onClick = jumpBackToRealWeek,
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(16.dp),

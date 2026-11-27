@@ -400,8 +400,20 @@ object ScheduleViewUtil {
         return "$y-${if (m < 10) "0$m" else "$m"}-${if (d < 10) "0$d" else "$d"}"
     }
 
+    /** 最大支持周次（与 HarmonyOS 端 MAX_WEEK 保持一致） */
+    const val MAX_WEEK: Int = 20
+
+    /** 将周次钳制到 1..maxWeek */
+    fun clampWeek(week: Int, maxWeek: Int = MAX_WEEK): Int = week.coerceIn(1, maxWeek)
+
+    /** 周次（1 起始）转分页索引（0 起始） */
+    fun weekToPage(week: Int, maxWeek: Int = MAX_WEEK): Int = clampWeek(week, maxWeek) - 1
+
+    /** 分页索引（0 起始）转周次（1 起始） */
+    fun pageToWeek(page: Int, maxWeek: Int = MAX_WEEK): Int = clampWeek(page + 1, maxWeek)
+
     /** 由学期起点推算当前真实周次（钳制到 1~20） */
-    fun computeRealWeek(termStart: java.util.Date, maxWeek: Int = 20): Int {
+    fun computeRealWeek(termStart: java.util.Date, maxWeek: Int = MAX_WEEK): Int {
         val now = java.util.Calendar.getInstance().apply {
             set(java.util.Calendar.HOUR_OF_DAY, 0)
             set(java.util.Calendar.MINUTE, 0)
@@ -423,11 +435,28 @@ object ScheduleViewUtil {
     /** 第 week 周的 7 个日期（周一~周日） */
     fun weekDates(termStart: java.util.Date, week: Int): List<java.util.Date> {
         val cal = java.util.Calendar.getInstance().apply { time = termStart }
-        cal.add(java.util.Calendar.DAY_OF_MONTH, (week - 1) * 7)
+        cal.add(java.util.Calendar.DAY_OF_MONTH, (clampWeek(week) - 1) * 7)
         return (0 until 7).map {
             val d = cal.time
             cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
             d
         }
+    }
+
+    /** 第 week 周 7 天的侧边日期标签（如 "8/31"） */
+    fun weekDateLabels(termStart: java.util.Date, week: Int): List<String> {
+        val dates = weekDates(termStart, clampWeek(week))
+        return dates.map {
+            val cal = java.util.Calendar.getInstance().apply { time = it }
+            "${cal.get(java.util.Calendar.MONTH) + 1}/${cal.get(java.util.Calendar.DAY_OF_MONTH)}"
+        }
+    }
+
+    /** 第 week 周表头角标月份（取周一所在月份，如 "8月"） */
+    fun monthLabel(termStart: java.util.Date, week: Int): String {
+        val dates = weekDates(termStart, clampWeek(week))
+        if (dates.isEmpty()) return ""
+        val cal = java.util.Calendar.getInstance().apply { time = dates[0] }
+        return "${cal.get(java.util.Calendar.MONTH) + 1}月"
     }
 }

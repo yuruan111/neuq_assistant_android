@@ -319,22 +319,23 @@ fun MainScreen(
                         realWeek = vm.realWeek,
                         headDateText = headDateText(),
                         termStartDateKey = vm.settings.termStartDate,
+                        termStartDate = vm.termStartDate,
                         timeSlots = vm.timeSlots,
                         courses = vm.scheduleCourses,
-                        sideDateLabels = weekDateLabels(vm.termStartDate, vm.currentWeek),
-                        monthLabel = monthLabel(vm.termStartDate, vm.currentWeek),
-                        todayIndex = todayIndex(vm.termStartDate, vm.currentWeek, vm.realWeek),
-                        restFlags = vm.restFlags,
-                        workFlags = vm.workFlags,
+                        todayDayIndex = currentWeekdayIndex(),
+                        holidayVersion = vm.holidayVersion,
+                        weekHolidayFlags = { week -> vm.holidayFlagsForWeek(week) },
                         lineWeightSolid = vm.lineWeightSolid,
                         fontScaleKey = vm.scheduleFontScale,
                         cardRadiusDp = vm.scheduleCardRadius,
                         rowHeightKey = vm.scheduleRowHeight,
                         autoHideWeekend = vm.autoHideWeekend,
                         hideTeacher = vm.hideCourseTeacher,
-                        onSwitchWeek = {
-                            vm.hapticTick()
-                            vm.switchWeek(it)
+                        onSwitchWeek = { delta ->
+                            if (vm.switchWeek(delta)) vm.hapticTick()
+                        },
+                        onSelectWeek = { week ->
+                            if (vm.selectWeek(week)) vm.hapticTick()
                         },
                         onOpenAdjust = { showAdjustPanel = true },
                         onCourseClick = {
@@ -951,23 +952,7 @@ private fun headDateText(): String {
     return "${now.get(Calendar.YEAR)}/${now.get(Calendar.MONTH) + 1}/${now.get(Calendar.DAY_OF_MONTH)}"
 }
 
-private fun weekDateLabels(termStart: java.util.Date, week: Int): List<String> {
-    val dates = ScheduleViewUtil.weekDates(termStart, week)
-    return dates.map {
-        val cal = Calendar.getInstance().apply { time = it }
-        "${cal.get(Calendar.MONTH) + 1}/${cal.get(Calendar.DAY_OF_MONTH)}"
-    }
-}
-
-private fun monthLabel(termStart: java.util.Date, week: Int): String {
-    val dates = ScheduleViewUtil.weekDates(termStart, week)
-    if (dates.isEmpty()) return ""
-    val cal = Calendar.getInstance().apply { time = dates[0] }
-    return "${cal.get(Calendar.MONTH) + 1}月"
-}
-
-private fun todayIndex(termStart: java.util.Date, week: Int, realWeek: Int): Int {
-    if (week != realWeek) return -1
+private fun currentWeekdayIndex(): Int {
     val w = Calendar.getInstance().get(Calendar.DAY_OF_WEEK)
     return if (w == Calendar.SUNDAY) 6 else w - Calendar.MONDAY
 }

@@ -111,6 +111,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var scheduleCourses by mutableStateOf(settings.loadCourses())
     var restFlags by mutableStateOf(List(7) { false })
     var workFlags by mutableStateOf(List(7) { false })
+    var holidayVersion by mutableStateOf(0)
+        private set
     var importBusy by mutableStateOf(false)
     var importError by mutableStateOf("")
     var importStatus by mutableStateOf("")
@@ -769,15 +771,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val flags = holidayService.getFlags(dates)
             restFlags = flags.restFlags
             workFlags = flags.workFlags
+            holidayVersion += 1
         }
     }
 
-    fun switchWeek(delta: Int) {
-        val next = currentWeek + delta
-        if (next < 1 || next > 20) return
+    fun holidayFlagsForWeek(week: Int): com.yuruan.neuqassist.data.WeekHolidayFlags =
+        holidayService.getFlags(ScheduleViewUtil.weekDates(termStartDate, ScheduleViewUtil.clampWeek(week)))
+
+    fun selectWeek(week: Int): Boolean {
+        val next = ScheduleViewUtil.clampWeek(week)
+        if (next == currentWeek) return false
         currentWeek = next
         refreshWeekMeta()
+        return true
     }
+
+    fun switchWeek(delta: Int): Boolean = selectWeek(currentWeek + delta)
 
     fun jumpToRealWeek() {
         realWeek = ScheduleViewUtil.computeRealWeek(termStartDate)
